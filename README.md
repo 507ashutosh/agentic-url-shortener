@@ -6,6 +6,8 @@ The system under change is a small URL shortener (Spring Boot). **The orchestrat
 
 > Principle: agents execute under defined autonomy boundaries; humans own oversight, approvals and final quality.
 
+**Two modes.** By default the agents replay **recorded model responses** (written in advance for the three scenarios), so a run is free, repeatable and needs no API key. Everything around the model is real: prompts, parsing, file writes, policy checks, approvals, rollback, the Maven build and tests, the patch and the audit log. This mode demonstrates the orchestration, not the model's engineering ability. With `--live`, real Claude agents do the work: see the [live run](sample-runs/brownfield-live/), where the agents chose their own design, wrote 17 files and 64 tests passed.
+
 ```
                           ┌ plan            ┐            ┌ implement ┐
 requirements → clarify → ┤                 ├→ design → ┼ tests     ┼→ validate → release
@@ -16,7 +18,7 @@ requirements → clarify → ┤                 ├→ design → ┼ tests    
 ## What happens in a run
 
 ```
-$ java -jar orchestrator/target/orchestrator.jar --scenario brownfield
+$ ./run.sh demo                 # or: java -jar orchestrator/target/orchestrator.jar --scenario brownfield
 Requirement: "Links should expire after N days."
   ✓ requirements     Optional per-link expiry in whole days; expired links … return 410 Gone
   ⏸ approval required · clarify · 2 open questions on the requirement          → accept or answer
@@ -38,8 +40,13 @@ Agents never touch the real code: each run works on a private copy in `runs/<run
 
 ### Option A — Docker (no Java needed)
 
+You need only **Docker with Compose** (Docker Desktop on macOS/Windows) and a free port 8080. The first run downloads the Java base images and libraries (a few hundred MB); later runs reuse them.
+
 ```bash
+git clone https://github.com/507ashutosh/agentic-url-shortener.git
+cd agentic-url-shortener
 ./run.sh            # starts the shortener on :8080, then runs the brownfield demo interactively
+./run.sh all-scenarios   # or: a guided tour of all three scenarios
 ```
 
 | Command | Effect |
@@ -51,7 +58,12 @@ Agents never touch the real code: each run works on a private copy in `runs/<run
 | `./run.sh metrics` | reliability metrics across all runs |
 | `./run.sh logs` / `./run.sh down` | follow the shortener's log / stop everything |
 
-The two containers are independent: the shortener is a long-running service; the orchestrator runs one scenario on its own copy of the code and exits. Run output appears in `./runs`. Without the script: `docker compose up -d shortener` and `docker compose run --rm orchestrator --scenario brownfield`.
+The two containers are independent: the shortener is a long-running service; the orchestrator runs one scenario on its own copy of the code and exits. Run output appears in `./runs`.
+
+- **Your name on approvals:** inside the container the OS user is `agent`; pass `./run.sh demo --approver <your-name>`.
+- **Live agents in Docker:** `ANTHROPIC_API_KEY=<your-key> ./run.sh demo --live` (the key is passed through from your shell, never stored).
+- **Without bash** (e.g. Windows PowerShell): `docker compose up -d shortener`, then `docker compose run --rm orchestrator --scenario brownfield`.
+- Tested on macOS with Docker Desktop, including a fresh clone with no cached images.
 
 ### Option B — Java 25
 
