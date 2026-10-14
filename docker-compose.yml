@@ -1,0 +1,26 @@
+# Both containers. Easiest through ./run.sh; directly:
+#   docker compose up -d shortener                                  the URL shortener on :8080
+#   docker compose run --rm orchestrator --scenario brownfield      the agentic pipeline demo (interactive)
+services:
+  shortener:
+    build:
+      context: .
+      dockerfile: docker/shortener.Dockerfile
+    image: url-shortener
+    ports:
+      - "8080:8080"
+
+  # Runs one scenario and exits, so it is not started by `docker compose up`.
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/orchestrator.Dockerfile
+    image: agentic-orchestrator
+    profiles: ["demo"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./runs:/workspace/runs
+    environment:
+      # Passed through only if set on the host; needed only for --live.
+      - ANTHROPIC_API_KEY

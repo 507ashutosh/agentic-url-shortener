@@ -39,16 +39,18 @@ Agents never touch the real code: each run works on a private copy in `runs/<run
 ### Option A — Docker (no Java needed)
 
 ```bash
-docker build -f docker/orchestrator.Dockerfile -t agentic-orchestrator .
-docker run --rm -it -v "$PWD/runs:/workspace/runs" agentic-orchestrator --scenario brownfield
+./run.sh            # starts the shortener on :8080, then runs the brownfield demo interactively
 ```
 
-The shortener on its own:
+| Command | Effect |
+|---------|--------|
+| `./run.sh up` | build and start the shortener in the background (API, Swagger UI, health on :8080) |
+| `./run.sh demo [options]` | run the orchestrator, e.g. `./run.sh demo --scenario greenfield --auto-approve` |
+| `./run.sh all [options]` | both of the above |
+| `./run.sh metrics` | reliability metrics across all runs |
+| `./run.sh logs` / `./run.sh down` | follow the shortener's log / stop everything |
 
-```bash
-docker build -f docker/shortener.Dockerfile -t url-shortener .
-docker run --rm -p 8080:8080 url-shortener
-```
+The two containers are independent: the shortener is a long-running service; the orchestrator runs one scenario on its own copy of the code and exits. Run output appears in `./runs`. Without the script: `docker compose up -d shortener` and `docker compose run --rm orchestrator --scenario brownfield`.
 
 ### Option B — Java 25
 
@@ -158,7 +160,7 @@ curl -X POST localhost:8080/shorten -H 'Content-Type: application/json' -d '{"ur
 ├─ shortener/             the URL shortener service (Spring Boot 4)
 ├─ scenarios/             greenfield.yaml, brownfield.yaml, ambiguous.yaml
 ├─ sample-runs/           committed example runs
-├─ docker/                Dockerfiles for both
+├─ docker/                Dockerfiles for both (docker-compose.yml and run.sh at the root)
 └─ docs/                  architecture, engineering summary, OpenAPI spec
 ```
 
