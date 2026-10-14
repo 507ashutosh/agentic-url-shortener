@@ -1,0 +1,70 @@
+Scenario: Link expiry (brownfield) · agents: scripted (mock/brownfield), injected faults [implement:broken-code]
+Requirement: "Links should expire after N days."
+Approvals: automatic · run folder: runs/run-20261014-133805-brownfield
+
+Pipeline 'sdlc-brownfield' · 10 stages · 7 waves
+  wave 1: requirements
+  wave 2: clarify
+  wave 3: plan, impact-analysis   (parallel)
+  wave 4: design
+  wave 5: implement, tests, docs   (parallel)
+  wave 6: validate
+  wave 7: release
+
+  [+ 0.01s]  ▶ requirements
+  [+ 0.01s]  ✓ requirements     0.00s  Optional per-link expiry in whole days; expired links stop redirecting and return 410 Gone
+  [+ 0.01s]  ▶ clarify
+  [+ 0.02s]  ✓ clarify          0.00s  2 question(s) left open; assumptions accepted by auto (--auto-approve)
+  [+ 0.02s]  ▶ impact-analysis
+  [+ 0.02s]  ▶ plan
+  [+ 0.02s]  ✓ plan             0.00s  9 tasks; schema and domain first, then code, tests and docs in parallel, then validation and release
+  [+ 0.02s]  ✓ impact-analysis  0.00s  8 files impacted across schema, entity, service, controller, DTOs and error handling; rate limiting and code generation unaffected
+  [+ 0.02s]  ▶ design
+  [+ 0.03s]  ✓ design           0.00s  Nullable expires_at column, optional expiresInDays (1-3650), 410 Gone for expired links, expiry shown in responses
+  [+ 0.03s]  ▶ docs
+  [+ 0.03s]  ▶ implement
+  [+ 0.03s]  ▶ tests
+  [+ 0.31s]  ✓ docs             0.28s  Feature guide for link expiry with request/response examples, error cases and migration notes
+  [+ 0.37s]  ✓ tests            0.34s  2 new test classes: unit tests for the expiry rules and an end-to-end test with a controllable clock
+  [+ 0.56s]  ✓ implement        0.53s  Expiry implemented in 10 files: schema, entity, service, 2 new exceptions, DTOs, controller, error mapping
+  [+ 0.56s]  ▶ validate
+  [+ 2.28s]  ↺ validate         rolled back: 13 files reverted back to the baseline
+  [+ 2.28s]  ■ safe-stop: validate failed after 1 attempt · no new stages will start
+  [+ 2.28s]  ✗ validate         1.72s  build or tests failed (compilation failed), see artifacts/validate-maven.log
+  [+ 2.28s]  – release          skipped: safe-stop: validate failed after 1 attempt
+
+Run STOPPED · 8 succeeded, 1 failed, 0 blocked, 1 skipped
+0 retries · 1 rollback · wall clock 2.28s · sum of stage times 2.89s
+Stopped because: validate failed after 1 attempt
+
+Decision lineage:
+  [requirements] ASSUMPTION N is chosen per link by the caller when shortening, not a single global setting
+  [requirements] ASSUMPTION Links created without an expiry never expire, so existing clients and existing links behave exactly as today
+  [requirements] ASSUMPTION N is a whole number of days between 1 and 3650 (10 years)
+  [requirements] ASSUMPTION An expired link answers 410 Gone (the resource existed but is gone), not 404
+  [requirements] ASSUMPTION Stats stay readable after expiry so owners can still see historical clicks
+  [requirements] QUESTION   Should expired links be deleted after a retention period, or kept forever for stats?
+  [requirements] QUESTION   Should the service enforce a default maximum expiry for all new links?
+  [plan] DECISION   Write tests from the design contract in parallel with the implementation  ← requirements
+  [impact-analysis] DECISION   Make the new column nullable  ← requirements
+  [impact-analysis] DECISION   Keep the one-argument UrlService.shorten(String)  ← requirements
+  [design] DECISION   Add nullable column expires_at to url_mapping  ← requirements, plan, impact-analysis
+  [design] DECISION   Return 410 Gone for expired links  ← requirements, plan, impact-analysis
+  [design] DECISION   Expiry is inclusive: expired when now >= expiresAt  ← requirements, plan, impact-analysis
+  [design] DECISION   Do not count clicks on expired links  ← requirements, plan, impact-analysis
+  [design] DECISION   Validate expiresInDays in the service, not the controller  ← requirements, plan, impact-analysis
+  [tests] DECISION   Replace the clock in the integration test with a @Primary test clock  ← requirements, design
+  [tests] ASSUMPTION The service exposes MAX_EXPIRY_DAYS = 3650 and the exception names given in the design  ← requirements, design
+  [implement] DECISION   Compute expired-state in the controller from the injected Clock  ← requirements, design
+
+Approvals:
+  [clarify] governance/requirements-clarification APPROVED by auto (--auto-approve) after 0.0s
+  [implement] change-control/db-migration  APPROVED by auto (--auto-approve) after 0.0s
+
+Policy findings:
+  [implement] change-control/db-migration  REQUIRES_APPROVAL · database schema change
+
+Time: 2.4s total · 2.4s agents and tools · 0.0s waiting for approvals
+Stage reports: runs/run-20261014-133805-brownfield/artifacts
+Audit log:     runs/run-20261014-133805-brownfield/audit.jsonl (hash chain verified)
+Run summary:   runs/run-20261014-133805-brownfield/run-summary.json · all runs: --metrics

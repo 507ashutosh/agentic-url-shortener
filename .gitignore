@@ -16,3 +16,6 @@ target/
 
 # Orchestrator run output (workspaces, artifacts, logs)
 runs/
+
+# Personal notes (interview preparation), never committed
+notes/

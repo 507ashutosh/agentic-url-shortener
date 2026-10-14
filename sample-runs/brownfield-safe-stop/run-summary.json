@@ -1,0 +1,88 @@
+{
+  "runId" : "run-20261014-133805-brownfield",
+  "scenario" : "brownfield",
+  "agents" : "scripted (mock/brownfield), injected faults [implement:broken-code]",
+  "startedAt" : "2026-10-14T11:38:05.986679Z",
+  "outcome" : "STOPPED",
+  "stopReason" : "validate failed after 1 attempt",
+  "wallClockMs" : 2398,
+  "humanWaitMs" : 0,
+  "agentTimeMs" : 2398,
+  "stagesSucceeded" : 8,
+  "stagesFailed" : 1,
+  "stagesBlocked" : 0,
+  "stagesSkipped" : 1,
+  "stagesReused" : 0,
+  "stageExecutions" : 9,
+  "retries" : 0,
+  "rollbacks" : 1,
+  "fallbacks" : 0,
+  "policyBlocks" : 0,
+  "approvalsGranted" : 2,
+  "approvalsRejected" : 0,
+  "revisionsRequested" : 0,
+  "replans" : 0,
+  "recoveryTimesMs" : [ ],
+  "unrecoveredFailures" : 1,
+  "stages" : [ {
+    "stageId" : "requirements",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 4,
+    "reused" : false
+  }, {
+    "stageId" : "clarify",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 1,
+    "reused" : false
+  }, {
+    "stageId" : "plan",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 0,
+    "reused" : false
+  }, {
+    "stageId" : "impact-analysis",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 4,
+    "reused" : false
+  }, {
+    "stageId" : "design",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 4,
+    "reused" : false
+  }, {
+    "stageId" : "implement",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 532,
+    "reused" : false
+  }, {
+    "stageId" : "tests",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 344,
+    "reused" : false
+  }, {
+    "stageId" : "docs",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 282,
+    "reused" : false
+  }, {
+    "stageId" : "validate",
+    "status" : "FAILED",
+    "attempts" : 1,
+    "durationMs" : 1717,
+    "reused" : false
+  }, {
+    "stageId" : "release",
+    "status" : "SKIPPED",
+    "attempts" : 0,
+    "durationMs" : 0,
+    "reused" : false
+  } ]
+}

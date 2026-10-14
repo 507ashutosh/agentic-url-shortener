@@ -1,0 +1,24 @@
+# plan
+
+**Summary:** 6 tasks: configuration and error mapping in parallel with tests and docs, then validation
+
+## Decisions and assumptions
+
+- **DECISION:** Prefer configuration over new code wherever Spring Boot already supports the behaviour — because less code to own and review _(based on: requirements)_
+
+## Report
+
+## Tasks
+
+| Id | Task | Stage | Depends on |
+|----|------|-------|------------|
+| T1 | Decide probes, timeouts, shutdown settings and the 503 contract | design | - |
+| T2 | Enable liveness/readiness probes, connection timeout, graceful shutdown in `application.properties` | implement | T1 |
+| T3 | Map database-unavailable exceptions to 503 + `Retry-After` | implement | T1 |
+| T4 | Integration tests for probes and the 503 mapping | tests | T1 |
+| T5 | Operations guide for the reliability behaviour | docs | T1 |
+| T6 | Build, run all tests, produce the change set | validate, release | T2-T5 |
+
+## Parallelism
+
+T2-T5 are independent once the design (T1) is fixed.

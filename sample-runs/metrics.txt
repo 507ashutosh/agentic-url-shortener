@@ -1,0 +1,13 @@
+Reliability metrics across 6 runs (runs)
+
+  success rate         5/6  83%
+  retry frequency      4 retries / 59 stage executions  7%
+  rollback frequency   2 rollbacks · 33% of runs had one
+  fallbacks            1 · policy blocks 1
+  MTTR                 0.8s over 3 recovered failures · 1 not recovered
+  end-to-end latency   p50 10.8s · p95 301.2s · max 301.2s
+  agent time           p50 6.7s · p95 301.2s  (excludes 12.8s waiting for approvals)
+
+  outcomes by scenario {brownfield={OK=3, STOPPED=1}, greenfield={OK=1}, ambiguous={OK=1}}
+  failed/blocked stages {validate=1}
+

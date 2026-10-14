@@ -49,7 +49,10 @@ public final class TestRunner {
 
         String logPath = context.workspace().runDir().relativize(log).toString();
         if (process.exitValue() != 0) {
-            List<String> errors = output.stream().filter(l -> l.startsWith("[ERROR]")).limit(8).toList();
+            // Show paths relative to the workspace: shorter, and no local directory names in reports.
+            String workspacePrefix = workspace.toAbsolutePath() + "/";
+            List<String> errors = output.stream().filter(l -> l.startsWith("[ERROR]"))
+                    .map(l -> l.replace(workspacePrefix, "")).limit(8).toList();
             context.record(new Artifact(STAGE_ID, "FAILED: " + totals,
                     "Build or tests failed. First errors:\n\n```\n" + String.join("\n", errors)
                             + "\n```\n\nFull log: " + logPath, List.of()), List.of());

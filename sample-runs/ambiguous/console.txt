@@ -1,0 +1,88 @@
+Scenario: Make it more reliable (ambiguous) · agents: scripted (mock/ambiguous)
+Requirement: "Make it more reliable."
+Approvals: by reviewer · run folder: runs/run-20261014-133111-ambiguous
+
+Pipeline 'sdlc-ambiguous' · 10 stages · 7 waves
+  wave 1: requirements
+  wave 2: clarify
+  wave 3: plan, impact-analysis   (parallel)
+  wave 4: design
+  wave 5: implement, tests, docs   (parallel)
+  wave 6: validate
+  wave 7: release
+
+  [+ 0.01s]  ▶ requirements
+  [+ 0.01s]  ✓ requirements     0.00s  Requirement is ambiguous; interpreted as operational reliability: health probes, fail-fast database access, clear 503s, graceful shutdown
+  [+ 0.01s]  ▶ clarify
+
+  ⏸ approval required · clarify · 3 open questions on the requirement
+    policy: governance/requirements-clarification
+      Open questions:
+        ? Reliable against what: database outages, traffic spikes, deploys/restarts, or data loss?
+        ? Is there a target availability or latency (e.g. 99.9%, p99 < 200 ms)?
+        ? Is persistence across restarts in scope (replacing the in-memory database)?
+      Assumptions the agents will work with if you accept:
+        • "Reliable" means the service behaves predictably when things go wrong and can be operated safely by an orchestrator such as Kubernetes
+        • No new infrastructure (no external database, cache or queue) in this change
+        • Persistence across restarts is out of scope; it is a larger, separate decision
+        • Existing API behaviour for successful requests must not change
+      [y] accept the assumptions · [r] answer the questions · [n] reject the requirement
+    approve? [y]es / [n]o / [r]evise:     your input (answers or what should change):     ↺ revision of 'requirements' requested by reviewer
+
+  [+ 1.68s]  ✓ clarify          1.67s  clarified by reviewer; requirements re-run: Clarified by a human: operational reliability (probes, fail-fast database, 503s, graceful shutdown); persistence stays out of scope
+  [+ 1.68s]  ▶ plan
+  [+ 1.68s]  ▶ impact-analysis
+  [+ 1.68s]  ✓ plan             0.00s  6 tasks: configuration and error mapping in parallel with tests and docs, then validation
+  [+ 1.69s]  ✓ impact-analysis  0.01s  2 files impacted: application.properties and ApiExceptionHandler; no schema, API or dependency change
+  [+ 1.69s]  ▶ design
+  [+ 1.70s]  ✓ design           0.01s  Enable liveness/readiness probes, 2 s connection timeout, 20 s graceful shutdown; database-unavailable → 503 with Retry-After: 5
+  [+ 1.70s]  ▶ docs
+  [+ 1.70s]  ▶ implement
+  [+ 1.70s]  ▶ tests
+  [+ 1.87s]  ✓ docs             0.17s  Operations guide: health probes, behaviour during database outages, and graceful shutdown
+  [+ 1.92s]  ✓ tests            0.22s  1 new integration test class: both probes report UP, and database-unavailable failures map to 503 with Retry-After
+  [+ 1.99s]  ✓ implement        0.29s  Probes, fail-fast connection timeout and graceful shutdown configured; database-unavailable errors now return 503 with Retry-After
+  [+ 2.00s]  ▶ validate
+  [+ 7.98s]  ✓ validate         5.99s  build OK, 38 tests run, 0 failures, 0 errors
+  [+ 7.98s]  ▶ release
+
+  ⏸ approval required · release · release this change set
+    policy: change-control/release
+      validation: build OK, 38 tests run, 0 failures, 0 errors
+      2 added, 2 modified, 0 deleted · patch: runs/run-20261014-133111-ambiguous/changes.patch
+      Change set for review (not yet applied to the repository).
+      
+      - added `docs/features/reliability.md`
+      - modified `shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java`
+      - modified `shortener/src/main/resources/application.properties`
+      - added `shortener/src/test/java/com/agentic/shortener/ReliabilityIntegrationTest.java`
+    approve? [y]es / [n]o / [r]evise:     ✓ approved by reviewer
+
+  [+10.68s]  ✓ release          2.70s  2 added, 2 modified, 0 deleted · patch: runs/run-20261014-133111-ambiguous/changes.patch
+
+Run OK · 10 succeeded, 0 failed, 0 blocked, 0 skipped
+0 retries · 0 rollbacks · wall clock 10.69s · sum of stage times 11.06s
+
+Decision lineage:
+  [requirements] DECISION   Scope confirmed by a human reviewer: database outages and restarts/deploys
+  [requirements] DECISION   Persistence across restarts is out of scope for this change
+  [requirements] ASSUMPTION No numeric availability target was given; the change targets predictable failure behaviour rather than a specific SLO
+  [requirements] ASSUMPTION Existing API behaviour for successful requests must not change
+  [plan] DECISION   Prefer configuration over new code wherever Spring Boot already supports the behaviour  ← requirements
+  [impact-analysis] DECISION   No schema or API change  ← requirements
+  [design] DECISION   Separate liveness and readiness probes  ← requirements, plan, impact-analysis
+  [design] DECISION   Return 503 with Retry-After: 5 when the database is unavailable  ← requirements, plan, impact-analysis
+  [design] DECISION   Map DataAccessResourceFailureException and CannotCreateTransactionException  ← requirements, plan, impact-analysis
+  [design] DECISION   Hikari connection timeout 2 s  ← requirements, plan, impact-analysis
+  [design] DECISION   Graceful shutdown with a 20 s grace period  ← requirements, plan, impact-analysis
+  [tests] DECISION   Simulate the database outage by making the service throw the Spring exceptions  ← requirements, design
+  [implement] DECISION   Do not include the exception message in the 503 body  ← requirements, design
+
+Approvals:
+  [clarify] governance/requirements-clarification REVISE by reviewer after 1.7s · "Database outages and restarts matter most; no availability target yet; keep the in-memory database for now."
+  [release] change-control/release       APPROVED by reviewer after 2.6s
+
+Time: 10.8s total · 6.6s agents and tools · 4.2s waiting for approvals
+Stage reports: runs/run-20261014-133111-ambiguous/artifacts
+Audit log:     runs/run-20261014-133111-ambiguous/audit.jsonl (hash chain verified)
+Run summary:   runs/run-20261014-133111-ambiguous/run-summary.json · all runs: --metrics

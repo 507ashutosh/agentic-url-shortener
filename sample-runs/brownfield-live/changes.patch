@@ -1,0 +1,953 @@
+diff --git a/docs/features/link-expiry.md b/docs/features/link-expiry.md
+new file mode 100644
+index 0000000..6e93aa8
+--- /dev/null
++++ b/docs/features/link-expiry.md
+@@ -0,0 +1,162 @@
++# Link Expiry
++
++Short links stop working a fixed number of days after they are created. This keeps stale links from staying live forever.
++
++## How it works
++
++- Every link has an expiry time:
++
++  `expiresAt = createdAt + N × 24 hours`
++
++  where **N** is the configured `shortener.link.expiry-days`. The default is 30.
++- A link counts as **expired** once the current time is **at or after** `expiresAt`.
++  - With N = 7, a link created at `2026-10-14T10:00:00Z` still redirects at `2026-10-21T09:59:59Z`.
++  - From `2026-10-21T10:00:00Z` onward it returns `410 Gone`.
++- Expiry is checked each time a link is followed. It is not stored per link. It is always calculated from `createdAt` and the current value of N.
++- **Expired links are not deleted.**
++  - They stay in storage.
++  - Their statistics stay available.
++  - Their short codes are never given to new links.
++- **Expired requests are not counted as clicks.** Following an expired link does not change `clickCount` or `lastAccessedAt`.
++- N is a single global setting. Callers cannot set expiry for an individual link, and links cannot be marked "never expire".
++
++## API changes
++
++### `GET /{code}`: follow a short link
++
++| Situation | Status | Notes |
++|---|---|---|
++| Link is active (`now < expiresAt`) | `302 Found` | `Location: <originalUrl>`. Unchanged. |
++| Link has expired (`now >= expiresAt`) | `410 Gone` | **No `Location` header.** The body is a problem detail (`application/problem+json`). |
++| Code was never created | `404 Not Found` | Unchanged. |
++
++Active link:
++
++```bash
++curl -i http://localhost:8080/Ab3dE9x
++```
++
++```http
++HTTP/1.1 302 Found
++Location: https://example.com/some/long/path
++```
++
++Expired link:
++
++```bash
++curl -i http://localhost:8080/Ab3dE9x
++```
++
++```http
++HTTP/1.1 410 Gone
++Content-Type: application/problem+json
++
++{
++  "type": "about:blank",
++  "title": "Gone",
++  "status": 410,
++  "detail": "Short link for code 'Ab3dE9x' has expired",
++  "instance": "/Ab3dE9x"
++}
++```
++
++### `POST /shorten`: create a short link
++
++The response body has a new field, `expiresAt`. Nothing else changes:
++
++- the status is still `201`
++- the `Location` header is the same
++- the `400` and `429` responses are the same
++- all existing fields are the same
++
++```bash
++curl -i -X POST http://localhost:8080/shorten \
++  -H 'Content-Type: application/json' \
++  -d '{"url": "https://example.com/some/long/path"}'
++```
++
++```http
++HTTP/1.1 201 Created
++Content-Type: application/json
++
++{
++  "code": "Ab3dE9x",
++  "shortUrl": "http://localhost:8080/Ab3dE9x",
++  "originalUrl": "https://example.com/some/long/path",
++  "expiresAt": "2026-11-13T10:00:00Z"
++}
++```
++
++This example assumes the default of N = 30 and a link created at `2026-10-14T10:00:00Z`.
++
++### `GET /stats/{code}`: link statistics
++
++- The response body has a new field, `expiresAt`, after `lastAccessedAt`.
++- **This endpoint still returns `200` for expired links**, so you can check whether a link has expired and when.
++- Unknown codes still return `404`.
++
++```bash
++curl -s http://localhost:8080/stats/Ab3dE9x
++```
++
++```json
++{
++  "code": "Ab3dE9x",
++  "originalUrl": "https://example.com/some/long/path",
++  "clickCount": 3,
++  "createdAt": "2026-10-14T10:00:00Z",
++  "lastAccessedAt": "2026-10-15T09:00:00Z",
++  "expiresAt": "2026-11-13T10:00:00Z"
++}
++```
++
++### `expiresAt` format
++
++- It is an ISO-8601 UTC timestamp ending in `Z`, for example `2026-11-13T10:00:00Z`.
++- Fractional seconds appear only when they are non-zero, with at most 6 digits. For example: `2026-11-13T10:00:00.123456Z`.
++- It always equals `createdAt` plus N × 24 hours.
++
++## Error cases
++
++| Case | Result |
++|---|---|
++| Following an expired link | `410 Gone`, problem-detail body, no `Location`, click not counted |
++| Following an unknown code | `404 Not Found`, unchanged from before |
++| Stats for an expired link | `200 OK` with `expiresAt` in the past |
++| `shortener.link.expiry-days` set to `0` or a negative number | The application **fails to start**. The error includes `shortener.link.expiry-days must be at least 1, but was <value>`. |
++| `shortener.link.expiry-days` set to a non-number (e.g. `abc`) | The application **fails to start**. The error includes `Failed to bind properties under 'shortener.link.expiry-days' to int`. |
++
++## Configuration
++
++| Property | Type | Default | Constraint |
++|---|---|---|---|
++| `shortener.link.expiry-days` | integer (days) | `30` | must be ≥ 1 |
++
++Example in `application.properties`:
++
++```properties
++# Days after creation until a link returns 410 Gone (minimum 1, default 30).
++shortener.link.expiry-days=7
++```
++
++Or set it with an environment variable or command-line argument, using Spring Boot's standard binding:
++
++```bash
++SHORTENER_LINK_EXPIRY_DAYS=7 java -jar shortener.jar
++java -jar shortener.jar --shortener.link.expiry-days=7
++```
++
++The value is read at startup. Changes take effect after a restart.
++
++## Upgrade and migration notes
++
++- **No database migration.** The schema is unchanged. Expiry uses the `createdAt` that is already stored for every link.
++- **Existing links expire retroactively.**
++  - On the first deploy, any existing link whose `createdAt` is more than N days old starts returning `410 Gone` straight away.
++  - Links younger than N days keep redirecting until they reach `expiresAt`.
++  - **This is pending human approval before release.** Check how many live links are older than N days before you deploy.
++- **Changing N affects every link, old and new.** Each restart re-evaluates all links against the new value:
++  - **Lowering N** can expire links that were previously active.
++  - **Raising N** brings previously expired links back to life, as long as they are younger than the new N.
++- **Client compatibility.** `POST /shorten` and `GET /stats/{code}` now return an extra `expiresAt` field. Clients that reject unknown JSON fields must be updated.
++- **Clients that follow redirects** should treat `410 Gone` as "this link existed but has expired", which is different from `404 Not Found` ("this link never existed").
+diff --git a/shortener/src/main/java/com/agentic/shortener/config/OpenApiConfig.java b/shortener/src/main/java/com/agentic/shortener/config/OpenApiConfig.java
+index 7e4e189..91cf9f3 100644
+--- a/shortener/src/main/java/com/agentic/shortener/config/OpenApiConfig.java
++++ b/shortener/src/main/java/com/agentic/shortener/config/OpenApiConfig.java
+@@ -17,6 +17,7 @@ public class OpenApiConfig {
+                 .version("0.1.0")
+                 .description("""
+                         Create short links, follow them, and read click statistics.
+-                        Errors use RFC 9457 problem details. Creating links is rate limited per client IP."""));
++                        Errors use RFC 9457 problem details. Creating links is rate limited per client IP.
++                        Links expire a configured number of days after creation; following an expired link returns 410 Gone."""));
+     }
+ }
+diff --git a/shortener/src/main/java/com/agentic/shortener/config/ShortenerProperties.java b/shortener/src/main/java/com/agentic/shortener/config/ShortenerProperties.java
+index 6043c70..7e11473 100644
+--- a/shortener/src/main/java/com/agentic/shortener/config/ShortenerProperties.java
++++ b/shortener/src/main/java/com/agentic/shortener/config/ShortenerProperties.java
+@@ -3,11 +3,23 @@ package com.agentic.shortener.config;
+ import java.time.Duration;
+ 
+ import org.springframework.boot.context.properties.ConfigurationProperties;
++import org.springframework.boot.context.properties.bind.DefaultValue;
+ 
+ /** Settings under the {@code shortener.*} prefix in application.properties. */
+ @ConfigurationProperties(prefix = "shortener")
+-public record ShortenerProperties(String baseUrl, RateLimit rateLimit) {
++public record ShortenerProperties(String baseUrl, RateLimit rateLimit, @DefaultValue Link link) {
+ 
+     public record RateLimit(int requests, Duration window) {
+     }
++
++    /** Link lifetime: a link stops redirecting {@code expiryDays} days after it was created. */
++    public record Link(@DefaultValue("30") int expiryDays) {
++
++        public Link {
++            if (expiryDays < 1) {
++                throw new IllegalArgumentException(
++                        "shortener.link.expiry-days must be at least 1, but was " + expiryDays);
++            }
++        }
++    }
+ }
+diff --git a/shortener/src/main/java/com/agentic/shortener/service/LinkExpiredException.java b/shortener/src/main/java/com/agentic/shortener/service/LinkExpiredException.java
+new file mode 100644
+index 0000000..5717bc9
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/service/LinkExpiredException.java
+@@ -0,0 +1,8 @@
++package com.agentic.shortener.service;
++
++public class LinkExpiredException extends RuntimeException {
++
++    public LinkExpiredException(String code) {
++        super("Short link for code '" + code + "' has expired");
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/service/LinkExpiryPolicy.java b/shortener/src/main/java/com/agentic/shortener/service/LinkExpiryPolicy.java
+new file mode 100644
+index 0000000..a7d1908
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/service/LinkExpiryPolicy.java
+@@ -0,0 +1,32 @@
++package com.agentic.shortener.service;
++
++import java.time.Duration;
++import java.time.Instant;
++
++import org.springframework.stereotype.Component;
++
++import com.agentic.shortener.config.ShortenerProperties;
++import com.agentic.shortener.domain.UrlMapping;
++
++/**
++ * Decides when a link expires: {@code createdAt + shortener.link.expiry-days}.
++ * Computed on read, so changing the setting re-evaluates every link, old and new.
++ */
++@Component
++public class LinkExpiryPolicy {
++
++    private final Duration expiry;
++
++    public LinkExpiryPolicy(ShortenerProperties properties) {
++        this.expiry = Duration.ofDays(properties.link().expiryDays());
++    }
++
++    public Instant expiresAt(UrlMapping mapping) {
++        return mapping.getCreatedAt().plus(expiry);
++    }
++
++    /** True from the exact expiry instant onwards. */
++    public boolean isExpired(UrlMapping mapping, Instant now) {
++        return !now.isBefore(expiresAt(mapping));
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/service/UrlService.java b/shortener/src/main/java/com/agentic/shortener/service/UrlService.java
+index 4150d91..d9fd38c 100644
+--- a/shortener/src/main/java/com/agentic/shortener/service/UrlService.java
++++ b/shortener/src/main/java/com/agentic/shortener/service/UrlService.java
+@@ -1,6 +1,8 @@
+ package com.agentic.shortener.service;
+ 
+ import java.time.Clock;
++import java.time.Instant;
++import java.time.temporal.ChronoUnit;
+ 
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+@@ -17,27 +19,35 @@ public class UrlService {
+     private final UrlMappingRepository repository;
+     private final UrlValidator validator;
+     private final CodeGenerator codeGenerator;
++    private final LinkExpiryPolicy expiryPolicy;
+     private final Clock clock;
+ 
+     public UrlService(UrlMappingRepository repository, UrlValidator validator,
+-                      CodeGenerator codeGenerator, Clock clock) {
++                      CodeGenerator codeGenerator, LinkExpiryPolicy expiryPolicy, Clock clock) {
+         this.repository = repository;
+         this.validator = validator;
+         this.codeGenerator = codeGenerator;
++        this.expiryPolicy = expiryPolicy;
+         this.clock = clock;
+     }
+ 
+     @Transactional
+     public UrlMapping shorten(String url) {
+         String validUrl = validator.validate(url);
+-        return repository.save(new UrlMapping(newUniqueCode(), validUrl, clock.instant()));
++        // Truncate to the column precision (TIMESTAMP(6)) so the returned expiresAt matches what is stored.
++        Instant createdAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
++        return repository.save(new UrlMapping(newUniqueCode(), validUrl, createdAt));
+     }
+ 
+-    /** Returns the long URL for a code and counts the visit. */
++    /** Returns the long URL for a code and counts the visit. Expired links are not counted. */
+     @Transactional
+     public String resolve(String code) {
++        Instant now = clock.instant();
+         UrlMapping mapping = find(code);
+-        repository.recordClick(code, clock.instant());
++        if (expiryPolicy.isExpired(mapping, now)) {
++            throw new LinkExpiredException(code);
++        }
++        repository.recordClick(code, now);
+         return mapping.getOriginalUrl();
+     }
+ 
+@@ -51,6 +61,7 @@ public class UrlService {
+     }
+ 
+     // A random code can collide with an existing one; retry a bounded number of times.
++    // Expired links stay in the table, so their codes are never handed out again.
+     private String newUniqueCode() {
+         for (int attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
+             String code = codeGenerator.next();
+diff --git a/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java b/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java
+index 01f6a6b..701553e 100644
+--- a/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java
++++ b/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java
+@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
+ 
+ import com.agentic.shortener.service.CodeNotFoundException;
+ import com.agentic.shortener.service.InvalidUrlException;
++import com.agentic.shortener.service.LinkExpiredException;
+ 
+ /** Turns exceptions into consistent JSON error bodies (RFC 9457 problem details). */
+ @RestControllerAdvice
+@@ -28,4 +29,9 @@ public class ApiExceptionHandler {
+     ProblemDetail notFound(CodeNotFoundException e) {
+         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
+     }
++
++    @ExceptionHandler(LinkExpiredException.class)
++    ProblemDetail gone(LinkExpiredException e) {
++        return ProblemDetail.forStatusAndDetail(HttpStatus.GONE, e.getMessage());
++    }
+ }
+diff --git a/shortener/src/main/java/com/agentic/shortener/web/UrlController.java b/shortener/src/main/java/com/agentic/shortener/web/UrlController.java
+index b355899..23650a6 100644
+--- a/shortener/src/main/java/com/agentic/shortener/web/UrlController.java
++++ b/shortener/src/main/java/com/agentic/shortener/web/UrlController.java
+@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
+ 
+ import com.agentic.shortener.config.ShortenerProperties;
+ import com.agentic.shortener.domain.UrlMapping;
++import com.agentic.shortener.service.LinkExpiryPolicy;
+ import com.agentic.shortener.service.UrlService;
+ import com.agentic.shortener.web.dto.ShortenRequest;
+ import com.agentic.shortener.web.dto.ShortenResponse;
+@@ -35,10 +36,12 @@ public class UrlController {
+ 
+     private final UrlService urlService;
+     private final ShortenerProperties properties;
++    private final LinkExpiryPolicy expiryPolicy;
+ 
+-    public UrlController(UrlService urlService, ShortenerProperties properties) {
++    public UrlController(UrlService urlService, ShortenerProperties properties, LinkExpiryPolicy expiryPolicy) {
+         this.urlService = urlService;
+         this.properties = properties;
++        this.expiryPolicy = expiryPolicy;
+     }
+ 
+     @PostMapping("/shorten")
+@@ -53,16 +56,22 @@ public class UrlController {
+         UrlMapping mapping = urlService.shorten(request.url());
+         String shortUrl = properties.baseUrl() + "/" + mapping.getCode();
+         return ResponseEntity.created(URI.create(shortUrl))
+-                .body(new ShortenResponse(mapping.getCode(), shortUrl, mapping.getOriginalUrl()));
++                .body(new ShortenResponse(mapping.getCode(), shortUrl, mapping.getOriginalUrl(),
++                        expiryPolicy.expiresAt(mapping)));
+     }
+ 
+-    // 302 (temporary) rather than 301: browsers cache 301s, which would hide later clicks from the stats.
++    // 302 (temporary) rather than 301: browsers cache 301s, which would hide later clicks from the stats
++    // and keep serving a link after it has expired.
+     @GetMapping("/" + CODE)
+-    @Operation(summary = "Follow a short link", description = "Redirects to the original URL and counts the click.")
++    @Operation(summary = "Follow a short link",
++            description = "Redirects to the original URL and counts the click. Returns 410 once the link is older "
++                    + "than the configured expiry (shortener.link.expiry-days, default 30 days).")
+     @ApiResponse(responseCode = "302", description = "Redirect to the original URL",
+             headers = @Header(name = "Location", description = "The original URL"))
+     @ApiResponse(responseCode = "404", description = "Unknown code",
+             content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
++    @ApiResponse(responseCode = "410", description = "Link has expired",
++            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+     public ResponseEntity<Void> redirect(@Parameter(example = "Ab3dE9x") @PathVariable String code) {
+         return ResponseEntity.status(HttpStatus.FOUND)
+                 .location(URI.create(urlService.resolve(code)))
+@@ -77,6 +86,6 @@ public class UrlController {
+     public StatsResponse stats(@Parameter(example = "Ab3dE9x") @PathVariable String code) {
+         UrlMapping mapping = urlService.stats(code);
+         return new StatsResponse(mapping.getCode(), mapping.getOriginalUrl(), mapping.getClickCount(),
+-                mapping.getCreatedAt(), mapping.getLastAccessedAt());
++                mapping.getCreatedAt(), mapping.getLastAccessedAt(), expiryPolicy.expiresAt(mapping));
+     }
+ }
+diff --git a/shortener/src/main/java/com/agentic/shortener/web/dto/ShortenResponse.java b/shortener/src/main/java/com/agentic/shortener/web/dto/ShortenResponse.java
+index 398e486..374c399 100644
+--- a/shortener/src/main/java/com/agentic/shortener/web/dto/ShortenResponse.java
++++ b/shortener/src/main/java/com/agentic/shortener/web/dto/ShortenResponse.java
+@@ -1,9 +1,13 @@
+ package com.agentic.shortener.web.dto;
+ 
++import java.time.Instant;
++
+ import io.swagger.v3.oas.annotations.media.Schema;
+ 
+ public record ShortenResponse(
+         @Schema(example = "Ab3dE9x") String code,
+         @Schema(example = "http://localhost:8080/Ab3dE9x") String shortUrl,
+-        @Schema(example = "https://example.com/some/long/path") String originalUrl) {
++        @Schema(example = "https://example.com/some/long/path") String originalUrl,
++        @Schema(description = "When the link stops redirecting: creation time plus the configured expiry (ISO-8601 UTC)",
++                example = "2026-11-13T10:00:00Z") Instant expiresAt) {
+ }
+diff --git a/shortener/src/main/java/com/agentic/shortener/web/dto/StatsResponse.java b/shortener/src/main/java/com/agentic/shortener/web/dto/StatsResponse.java
+index dcc6a14..323a26f 100644
+--- a/shortener/src/main/java/com/agentic/shortener/web/dto/StatsResponse.java
++++ b/shortener/src/main/java/com/agentic/shortener/web/dto/StatsResponse.java
+@@ -9,5 +9,7 @@ public record StatsResponse(
+         @Schema(example = "https://example.com/some/long/path") String originalUrl,
+         @Schema(description = "Number of redirects served", example = "3") long clickCount,
+         Instant createdAt,
+-        @Schema(description = "Time of the last redirect; null if never visited") Instant lastAccessedAt) {
++        @Schema(description = "Time of the last redirect; null if never visited") Instant lastAccessedAt,
++        @Schema(description = "When the link stops redirecting: creation time plus the configured expiry (ISO-8601 UTC)",
++                example = "2026-11-13T10:00:00Z") Instant expiresAt) {
+ }
+diff --git a/shortener/src/main/resources/application.properties b/shortener/src/main/resources/application.properties
+index fc442e7..4821be9 100644
+--- a/shortener/src/main/resources/application.properties
++++ b/shortener/src/main/resources/application.properties
+@@ -18,3 +18,5 @@ shortener.base-url=http://localhost:8080
+ # POST /shorten requests allowed per client IP per window.
+ shortener.rate-limit.requests=20
+ shortener.rate-limit.window=1m
++# Days after creation until a link returns 410 Gone (minimum 1, default 30).
++# shortener.link.expiry-days=30
+diff --git a/shortener/src/test/java/com/agentic/shortener/LinkExpiryApiContractIntegrationTest.java b/shortener/src/test/java/com/agentic/shortener/LinkExpiryApiContractIntegrationTest.java
+new file mode 100644
+index 0000000..c1896be
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/LinkExpiryApiContractIntegrationTest.java
+@@ -0,0 +1,70 @@
++package com.agentic.shortener;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.hamcrest.Matchers.matchesPattern;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import java.time.Duration;
++import java.time.Instant;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
++import org.springframework.http.MediaType;
++import org.springframework.test.web.servlet.MockMvc;
++
++import com.jayway.jsonpath.JsonPath;
++
++/** Expiry contract with the real clock and the default expiry (no shortener.link.expiry-days set). */
++@SpringBootTest(properties = "shortener.rate-limit.requests=1000")
++@AutoConfigureMockMvc
++class LinkExpiryApiContractIntegrationTest {
++
++    private static final String ISO_UTC = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?Z$";
++
++    @Autowired
++    private MockMvc mockMvc;
++
++    @Test
++    void expiresAtIsIsoUtcAndDefaultsToThirtyDaysAfterCreation() throws Exception {
++        String body = mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
++                        .content("{\"url\": \"https://example.com/contract\"}"))
++                .andExpect(status().isCreated())
++                .andExpect(jsonPath("$.expiresAt").value(matchesPattern(ISO_UTC)))
++                .andReturn().getResponse().getContentAsString();
++        String code = JsonPath.read(body, "$.code");
++        String shortenExpiresAt = JsonPath.read(body, "$.expiresAt");
++
++        String stats = mockMvc.perform(get("/stats/" + code))
++                .andExpect(status().isOk())
++                .andExpect(jsonPath("$.expiresAt").value(matchesPattern(ISO_UTC)))
++                .andReturn().getResponse().getContentAsString();
++        Instant createdAt = Instant.parse(JsonPath.read(stats, "$.createdAt"));
++        Instant expiresAt = Instant.parse(JsonPath.read(stats, "$.expiresAt"));
++
++        assertThat(expiresAt).isEqualTo(createdAt.plus(Duration.ofDays(30)));
++        assertThat(Instant.parse(shortenExpiresAt)).isEqualTo(expiresAt);
++    }
++
++    @Test
++    void freshLinkStillRedirects() throws Exception {
++        String body = mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
++                        .content("{\"url\": \"https://example.com/fresh\"}"))
++                .andExpect(status().isCreated())
++                .andReturn().getResponse().getContentAsString();
++        String code = JsonPath.read(body, "$.code");
++
++        mockMvc.perform(get("/" + code)).andExpect(status().isFound());
++    }
++
++    @Test
++    void openApiDocuments410ForRedirect() throws Exception {
++        mockMvc.perform(get("/v3/api-docs"))
++                .andExpect(status().isOk())
++                .andExpect(jsonPath("$.paths['/{code}'].get.responses['410']").exists());
++    }
++}
+diff --git a/shortener/src/test/java/com/agentic/shortener/LinkExpiryIntegrationTest.java b/shortener/src/test/java/com/agentic/shortener/LinkExpiryIntegrationTest.java
+new file mode 100644
+index 0000000..ac1a60b
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/LinkExpiryIntegrationTest.java
+@@ -0,0 +1,159 @@
++package com.agentic.shortener;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.Mockito.doReturn;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import java.time.Clock;
++import java.time.Duration;
++import java.time.Instant;
++import java.time.ZoneOffset;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
++import org.springframework.http.MediaType;
++import org.springframework.test.context.bean.override.convention.TestBean;
++import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
++import org.springframework.test.web.servlet.MockMvc;
++
++import com.agentic.shortener.domain.UrlMapping;
++import com.agentic.shortener.domain.UrlMappingRepository;
++import com.agentic.shortener.service.CodeGenerator;
++
++/**
++ * Full application with N = 7 days and the clock fixed at NOW.
++ * The H2 database is shared by all contexts in the JVM, so every seeded code is used once only.
++ */
++@SpringBootTest(properties = {"shortener.link.expiry-days=7", "shortener.rate-limit.requests=1000"})
++@AutoConfigureMockMvc
++class LinkExpiryIntegrationTest {
++
++    private static final Instant NOW = Instant.parse("2026-10-14T10:00:00Z");
++    private static final Duration SEVEN_DAYS = Duration.ofDays(7);
++
++    @TestBean
++    private Clock clock;
++
++    @MockitoSpyBean
++    private CodeGenerator codeGenerator;
++
++    @Autowired
++    private MockMvc mockMvc;
++
++    @Autowired
++    private UrlMappingRepository repository;
++
++    static Clock clock() {
++        return Clock.fixed(NOW, ZoneOffset.UTC);
++    }
++
++    @Test
++    void linkExactlyNDaysOldReturns410WithoutLocation() throws Exception {
++        seed("exp0001", NOW.minus(SEVEN_DAYS));
++
++        expectGone("exp0001");
++    }
++
++    @Test
++    void linkLongPastExpiryReturns410WithoutLocation() throws Exception {
++        seed("exp0002", NOW.minus(Duration.ofDays(30)));
++
++        expectGone("exp0002");
++    }
++
++    @Test
++    void linkOneSecondBeforeExpiryStillRedirects() throws Exception {
++        seed("exp0003", NOW.minus(SEVEN_DAYS).plusSeconds(1));
++
++        mockMvc.perform(get("/exp0003"))
++                .andExpect(status().isFound())
++                .andExpect(header().string("Location", "https://example.com/exp0003"));
++    }
++
++    @Test
++    void expiredLinkIsKeptAndStatsStillWorkWithoutCountingTheClick() throws Exception {
++        seed("exp0004", NOW.minus(SEVEN_DAYS));
++
++        mockMvc.perform(get("/exp0004")).andExpect(status().isGone());
++
++        UrlMapping stored = repository.findByCode("exp0004").orElseThrow();
++        assertThat(stored.getClickCount()).isZero();
++        assertThat(stored.getLastAccessedAt()).isNull();
++
++        mockMvc.perform(get("/stats/exp0004"))
++                .andExpect(status().isOk())
++                .andExpect(jsonPath("$.code").value("exp0004"))
++                .andExpect(jsonPath("$.originalUrl").value("https://example.com/exp0004"))
++                .andExpect(jsonPath("$.clickCount").value(0))
++                .andExpect(jsonPath("$.lastAccessedAt").isEmpty())
++                .andExpect(jsonPath("$.createdAt").value(NOW.minus(SEVEN_DAYS).toString()))
++                .andExpect(jsonPath("$.expiresAt").value(NOW.toString()));
++    }
++
++    @Test
++    void codeOfAnExpiredLinkIsNotReassigned() throws Exception {
++        seed("exp0005", NOW.minus(Duration.ofDays(30)));
++        doReturn("exp0005", "fresh06").when(codeGenerator).next();
++
++        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
++                        .content("{\"url\": \"https://example.org/new\"}"))
++                .andExpect(status().isCreated())
++                .andExpect(jsonPath("$.code").value("fresh06"));
++
++        mockMvc.perform(get("/stats/exp0005"))
++                .andExpect(status().isOk())
++                .andExpect(jsonPath("$.originalUrl").value("https://example.com/exp0005"));
++        mockMvc.perform(get("/exp0005")).andExpect(status().isGone());
++    }
++
++    @Test
++    void unknownCodeStillReturns404NotGone() throws Exception {
++        mockMvc.perform(get("/nosuch1"))
++                .andExpect(status().isNotFound())
++                .andExpect(header().doesNotExist("Location"));
++    }
++
++    @Test
++    void shortenAndStatsExposeExpiresAtAsCreatedAtPlusNDays() throws Exception {
++        String expected = NOW.plus(SEVEN_DAYS).toString();
++        assertThat(expected).isEqualTo("2026-10-21T10:00:00Z");
++
++        String body = mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
++                        .content("{\"url\": \"https://example.com/ac6\"}"))
++                .andExpect(status().isCreated())
++                .andExpect(header().exists("Location"))
++                .andExpect(jsonPath("$.code").isNotEmpty())
++                .andExpect(jsonPath("$.shortUrl").isNotEmpty())
++                .andExpect(jsonPath("$.originalUrl").value("https://example.com/ac6"))
++                .andExpect(jsonPath("$.expiresAt").value(expected))
++                .andReturn().getResponse().getContentAsString();
++        String code = com.jayway.jsonpath.JsonPath.read(body, "$.code");
++
++        mockMvc.perform(get("/stats/" + code))
++                .andExpect(status().isOk())
++                .andExpect(jsonPath("$.createdAt").value(NOW.toString()))
++                .andExpect(jsonPath("$.expiresAt").value(expected));
++    }
++
++    private void expectGone(String code) throws Exception {
++        mockMvc.perform(get("/" + code))
++                .andExpect(status().isGone())
++                .andExpect(header().doesNotExist("Location"))
++                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
++                .andExpect(jsonPath("$.status").value(410))
++                .andExpect(jsonPath("$.title").value("Gone"))
++                .andExpect(jsonPath("$.detail").value("Short link for code '" + code + "' has expired"))
++                .andExpect(jsonPath("$.instance").value("/" + code));
++    }
++
++    private void seed(String code, Instant createdAt) {
++        repository.save(new UrlMapping(code, "https://example.com/" + code, createdAt));
++    }
++}
+diff --git a/shortener/src/test/java/com/agentic/shortener/config/ShortenerPropertiesTest.java b/shortener/src/test/java/com/agentic/shortener/config/ShortenerPropertiesTest.java
+new file mode 100644
+index 0000000..c2b8bc2
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/config/ShortenerPropertiesTest.java
+@@ -0,0 +1,64 @@
++package com.agentic.shortener.config;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++import org.springframework.boot.context.properties.EnableConfigurationProperties;
++import org.springframework.boot.test.context.runner.ApplicationContextRunner;
++import org.springframework.context.annotation.Configuration;
++
++class ShortenerPropertiesTest {
++
++    private final ApplicationContextRunner runner = new ApplicationContextRunner()
++            .withUserConfiguration(PropertiesConfig.class);
++
++    @Test
++    void expiryDaysDefaultsTo30WhenUnset() {
++        runner.run(context -> {
++            assertThat(context).hasNotFailed();
++            assertThat(context.getBean(ShortenerProperties.class).link().expiryDays()).isEqualTo(30);
++        });
++    }
++
++    @Test
++    void expiryDaysIsReadFromConfiguration() {
++        runner.withPropertyValues("shortener.link.expiry-days=7").run(context -> {
++            assertThat(context).hasNotFailed();
++            assertThat(context.getBean(ShortenerProperties.class).link().expiryDays()).isEqualTo(7);
++        });
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"0", "-1", "abc"})
++    void invalidExpiryDaysFailsStartupNamingTheProperty(String value) {
++        runner.withPropertyValues("shortener.link.expiry-days=" + value).run(context -> {
++            assertThat(context).hasFailed();
++            assertThat(context.getStartupFailure()).hasStackTraceContaining("shortener.link.expiry-days");
++        });
++    }
++
++    @Test
++    void zeroFailsWithTheDocumentedMessage() {
++        runner.withPropertyValues("shortener.link.expiry-days=0").run(context ->
++                assertThat(context.getStartupFailure())
++                        .rootCause()
++                        .isInstanceOf(IllegalArgumentException.class)
++                        .hasMessage("shortener.link.expiry-days must be at least 1, but was 0"));
++    }
++
++    @Test
++    void linkRecordRejectsValuesBelowOne() {
++        assertThatThrownBy(() -> new ShortenerProperties.Link(-1))
++                .isInstanceOf(IllegalArgumentException.class)
++                .hasMessage("shortener.link.expiry-days must be at least 1, but was -1");
++        assertThat(new ShortenerProperties.Link(1).expiryDays()).isEqualTo(1);
++    }
++
++    @Configuration(proxyBeanMethods = false)
++    @EnableConfigurationProperties(ShortenerProperties.class)
++    static class PropertiesConfig {
++    }
++}
+diff --git a/shortener/src/test/java/com/agentic/shortener/service/LinkExpiryPolicyTest.java b/shortener/src/test/java/com/agentic/shortener/service/LinkExpiryPolicyTest.java
+new file mode 100644
+index 0000000..be0711d
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/service/LinkExpiryPolicyTest.java
+@@ -0,0 +1,57 @@
++package com.agentic.shortener.service;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.time.Duration;
++import java.time.Instant;
++
++import org.junit.jupiter.api.Test;
++
++import com.agentic.shortener.config.ShortenerProperties;
++import com.agentic.shortener.domain.UrlMapping;
++
++class LinkExpiryPolicyTest {
++
++    private static final Instant T = Instant.parse("2026-10-14T10:00:00Z");
++
++    private final UrlMapping mapping = new UrlMapping("abc1234", "https://example.com", T);
++    private final LinkExpiryPolicy policy = policyWithDays(7);
++
++    @Test
++    void expiresAtIsCreatedAtPlusNDays() {
++        assertThat(policy.expiresAt(mapping)).isEqualTo(Instant.parse("2026-10-21T10:00:00Z"));
++    }
++
++    @Test
++    void notExpiredOneSecondBeforeExpiry() {
++        assertThat(policy.isExpired(mapping, T.plus(Duration.ofDays(7)).minusSeconds(1))).isFalse();
++    }
++
++    @Test
++    void expiredExactlyAtExpiry() {
++        assertThat(policy.isExpired(mapping, T.plus(Duration.ofDays(7)))).isTrue();
++    }
++
++    @Test
++    void expiredAfterExpiry() {
++        assertThat(policy.isExpired(mapping, T.plus(Duration.ofDays(8)))).isTrue();
++    }
++
++    @Test
++    void notExpiredAtCreationTime() {
++        assertThat(policy.isExpired(mapping, T)).isFalse();
++    }
++
++    @Test
++    void changingNChangesExpiryOfTheSameLink() {
++        Instant tenDaysLater = T.plus(Duration.ofDays(10));
++
++        assertThat(policyWithDays(7).isExpired(mapping, tenDaysLater)).isTrue();
++        assertThat(policyWithDays(30).isExpired(mapping, tenDaysLater)).isFalse();
++        assertThat(policyWithDays(30).expiresAt(mapping)).isEqualTo(T.plus(Duration.ofDays(30)));
++    }
++
++    private static LinkExpiryPolicy policyWithDays(int days) {
++        return new LinkExpiryPolicy(new ShortenerProperties(null, null, new ShortenerProperties.Link(days)));
++    }
++}
+diff --git a/shortener/src/test/java/com/agentic/shortener/service/UrlServiceExpiryTest.java b/shortener/src/test/java/com/agentic/shortener/service/UrlServiceExpiryTest.java
+new file mode 100644
+index 0000000..6127656
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/service/UrlServiceExpiryTest.java
+@@ -0,0 +1,103 @@
++package com.agentic.shortener.service;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.time.Clock;
++import java.time.Duration;
++import java.time.Instant;
++import java.time.ZoneOffset;
++import java.util.Optional;
++
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++import com.agentic.shortener.config.ShortenerProperties;
++import com.agentic.shortener.domain.UrlMapping;
++import com.agentic.shortener.domain.UrlMappingRepository;
++
++/** Expiry behaviour of UrlService with N = 7 days and a fixed clock. */
++class UrlServiceExpiryTest {
++
++    private static final Instant NOW = Instant.parse("2026-10-14T10:00:00Z");
++    private static final Duration SEVEN_DAYS = Duration.ofDays(7);
++
++    private final UrlMappingRepository repository = mock(UrlMappingRepository.class);
++    private final CodeGenerator codeGenerator = mock(CodeGenerator.class);
++    private final LinkExpiryPolicy policy = new LinkExpiryPolicy(
++            new ShortenerProperties(null, null, new ShortenerProperties.Link(7)));
++    private UrlService service;
++
++    @BeforeEach
++    void setUp() {
++        service = serviceAt(NOW);
++        when(repository.save(any(UrlMapping.class))).thenAnswer(call -> call.getArgument(0));
++    }
++
++    @Test
++    void linkOneSecondBeforeExpiryResolvesAndRecordsTheClick() {
++        givenLinkCreatedAt(NOW.minus(SEVEN_DAYS).plusSeconds(1));
++
++        assertThat(service.resolve("abc1234")).isEqualTo("https://example.com");
++        verify(repository).recordClick("abc1234", NOW);
++    }
++
++    @Test
++    void linkExactlyAtExpiryThrowsAndDoesNotRecordAClick() {
++        givenLinkCreatedAt(NOW.minus(SEVEN_DAYS));
++
++        assertThatThrownBy(() -> service.resolve("abc1234"))
++                .isInstanceOf(LinkExpiredException.class)
++                .hasMessage("Short link for code 'abc1234' has expired");
++        verify(repository, never()).recordClick(any(), any());
++    }
++
++    @Test
++    void longExpiredLinkThrows() {
++        givenLinkCreatedAt(NOW.minus(Duration.ofDays(30)));
++
++        assertThatThrownBy(() -> service.resolve("abc1234")).isInstanceOf(LinkExpiredException.class);
++        verify(repository, never()).recordClick(any(), any());
++    }
++
++    @Test
++    void unknownCodeStillThrowsCodeNotFound() {
++        when(repository.findByCode("missing")).thenReturn(Optional.empty());
++
++        assertThatThrownBy(() -> service.resolve("missing"))
++                .isInstanceOf(CodeNotFoundException.class)
++                .isNotInstanceOf(LinkExpiredException.class);
++        verify(repository, never()).recordClick(any(), any());
++    }
++
++    @Test
++    void statsStillReturnsAnExpiredLink() {
++        givenLinkCreatedAt(NOW.minus(Duration.ofDays(30)));
++
++        assertThat(service.stats("abc1234").getCode()).isEqualTo("abc1234");
++    }
++
++    @Test
++    void shortenStoresCreatedAtTruncatedToMicroseconds() {
++        service = serviceAt(NOW.plusNanos(123_456_789));
++        when(codeGenerator.next()).thenReturn("abc1234");
++
++        assertThat(service.shorten("https://example.com").getCreatedAt())
++                .isEqualTo(NOW.plusNanos(123_456_000));
++    }
++
++    private UrlService serviceAt(Instant instant) {
++        return new UrlService(repository, new UrlValidator(), codeGenerator, policy,
++                Clock.fixed(instant, ZoneOffset.UTC));
++    }
++
++    private void givenLinkCreatedAt(Instant createdAt) {
++        when(repository.findByCode("abc1234"))
++                .thenReturn(Optional.of(new UrlMapping("abc1234", "https://example.com", createdAt)));
++    }
++}
+diff --git a/shortener/src/test/java/com/agentic/shortener/service/UrlServiceTest.java b/shortener/src/test/java/com/agentic/shortener/service/UrlServiceTest.java
+index 2aaaf38..40bdf03 100644
+--- a/shortener/src/test/java/com/agentic/shortener/service/UrlServiceTest.java
++++ b/shortener/src/test/java/com/agentic/shortener/service/UrlServiceTest.java
+@@ -17,6 +17,7 @@ import java.util.Optional;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
+ 
++import com.agentic.shortener.config.ShortenerProperties;
+ import com.agentic.shortener.domain.UrlMapping;
+ import com.agentic.shortener.domain.UrlMappingRepository;
+ 
+@@ -30,7 +31,9 @@ class UrlServiceTest {
+ 
+     @BeforeEach
+     void setUp() {
+-        service = new UrlService(repository, new UrlValidator(), codeGenerator,
++        LinkExpiryPolicy expiryPolicy = new LinkExpiryPolicy(
++                new ShortenerProperties(null, null, new ShortenerProperties.Link(7)));
++        service = new UrlService(repository, new UrlValidator(), codeGenerator, expiryPolicy,
+                 Clock.fixed(NOW, ZoneOffset.UTC));
+         when(repository.save(any(UrlMapping.class))).thenAnswer(call -> call.getArgument(0));
+     }

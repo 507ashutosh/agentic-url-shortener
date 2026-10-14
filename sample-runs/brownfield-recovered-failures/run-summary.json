@@ -1,0 +1,88 @@
+{
+  "runId" : "run-20261014-133757-brownfield",
+  "scenario" : "brownfield",
+  "agents" : "scripted (mock/brownfield), injected faults [tests:error, docs:secret, design:outage]",
+  "startedAt" : "2026-10-14T11:37:57.218858Z",
+  "outcome" : "OK",
+  "stopReason" : null,
+  "wallClockMs" : 8502,
+  "humanWaitMs" : 0,
+  "agentTimeMs" : 8502,
+  "stagesSucceeded" : 10,
+  "stagesFailed" : 0,
+  "stagesBlocked" : 0,
+  "stagesSkipped" : 0,
+  "stagesReused" : 0,
+  "stageExecutions" : 10,
+  "retries" : 4,
+  "rollbacks" : 1,
+  "fallbacks" : 1,
+  "policyBlocks" : 1,
+  "approvalsGranted" : 3,
+  "approvalsRejected" : 0,
+  "revisionsRequested" : 0,
+  "replans" : 0,
+  "recoveryTimesMs" : [ 1050, 621, 579 ],
+  "unrecoveredFailures" : 0,
+  "stages" : [ {
+    "stageId" : "requirements",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 4,
+    "reused" : false
+  }, {
+    "stageId" : "clarify",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 1,
+    "reused" : false
+  }, {
+    "stageId" : "plan",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 1,
+    "reused" : false
+  }, {
+    "stageId" : "impact-analysis",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 5,
+    "reused" : false
+  }, {
+    "stageId" : "design",
+    "status" : "SUCCEEDED",
+    "attempts" : 3,
+    "durationMs" : 1052,
+    "reused" : false
+  }, {
+    "stageId" : "implement",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 399,
+    "reused" : false
+  }, {
+    "stageId" : "tests",
+    "status" : "SUCCEEDED",
+    "attempts" : 2,
+    "durationMs" : 686,
+    "reused" : false
+  }, {
+    "stageId" : "docs",
+    "status" : "SUCCEEDED",
+    "attempts" : 2,
+    "durationMs" : 807,
+    "reused" : false
+  }, {
+    "stageId" : "validate",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 6293,
+    "reused" : false
+  }, {
+    "stageId" : "release",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 214,
+    "reused" : false
+  } ]
+}

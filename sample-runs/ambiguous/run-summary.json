@@ -1,0 +1,88 @@
+{
+  "runId" : "run-20261014-133111-ambiguous",
+  "scenario" : "ambiguous",
+  "agents" : "scripted (mock/ambiguous)",
+  "startedAt" : "2026-10-14T11:31:11.088101Z",
+  "outcome" : "OK",
+  "stopReason" : null,
+  "wallClockMs" : 10826,
+  "humanWaitMs" : 4244,
+  "agentTimeMs" : 6582,
+  "stagesSucceeded" : 10,
+  "stagesFailed" : 0,
+  "stagesBlocked" : 0,
+  "stagesSkipped" : 0,
+  "stagesReused" : 0,
+  "stageExecutions" : 10,
+  "retries" : 0,
+  "rollbacks" : 0,
+  "fallbacks" : 0,
+  "policyBlocks" : 0,
+  "approvalsGranted" : 1,
+  "approvalsRejected" : 0,
+  "revisionsRequested" : 1,
+  "replans" : 0,
+  "recoveryTimesMs" : [ ],
+  "unrecoveredFailures" : 0,
+  "stages" : [ {
+    "stageId" : "requirements",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 4,
+    "reused" : false
+  }, {
+    "stageId" : "clarify",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 1665,
+    "reused" : false
+  }, {
+    "stageId" : "plan",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 3,
+    "reused" : false
+  }, {
+    "stageId" : "impact-analysis",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 10,
+    "reused" : false
+  }, {
+    "stageId" : "design",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 6,
+    "reused" : false
+  }, {
+    "stageId" : "implement",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 293,
+    "reused" : false
+  }, {
+    "stageId" : "tests",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 223,
+    "reused" : false
+  }, {
+    "stageId" : "docs",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 170,
+    "reused" : false
+  }, {
+    "stageId" : "validate",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 5986,
+    "reused" : false
+  }, {
+    "stageId" : "release",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 2697,
+    "reused" : false
+  } ]
+}

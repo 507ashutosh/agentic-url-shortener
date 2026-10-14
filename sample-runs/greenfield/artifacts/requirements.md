@@ -1,0 +1,36 @@
+# requirements
+
+**Summary:** REST service with three operations (shorten, redirect, stats), abuse protection and input validation
+
+## Decisions and assumptions
+
+- **ASSUMPTION:** "Safe to expose publicly" means: only http/https URLs are accepted, codes cannot be guessed, and link creation is rate limited per client
+- **ASSUMPTION:** Anonymous use; no accounts or authentication in this version
+- **ASSUMPTION:** The same long URL shortened twice gets two different codes (no de-duplication)
+- **ASSUMPTION:** Click statistics are a total count plus the last access time; no per-day breakdown
+- **ASSUMPTION:** An in-memory H2 database is acceptable for this version; data is lost on restart
+- **QUESTION:** Should users be able to choose their own short code (custom aliases)?
+- **QUESTION:** What creation rate per client is acceptable before throttling?
+
+## Report
+
+## Intent
+
+A small public service that turns long URLs into short links, redirects visitors, and counts clicks.
+
+## Scope
+
+In scope: shorten, redirect, statistics, input validation, rate limiting of creation, health check, API documentation.
+Out of scope: user accounts, custom aliases, link editing or deletion, analytics beyond a click count.
+
+## Acceptance criteria
+
+1. `POST /shorten` with `{"url": "..."}` returns 201 with a short code and short URL.
+2. `GET /{code}` redirects (302) to the original URL and counts the click.
+3. `GET /stats/{code}` returns the original URL, click count, creation time and last access time.
+4. Non-http(s), malformed, missing or over-long (> 2048 characters) URLs are rejected with 400.
+5. Unknown codes return 404 for both redirect and stats.
+6. Link creation is limited per client IP; excess requests get 429 with `Retry-After`.
+7. Errors use a consistent JSON format.
+8. A health endpoint reports whether the service is up.
+9. The API is documented (OpenAPI).

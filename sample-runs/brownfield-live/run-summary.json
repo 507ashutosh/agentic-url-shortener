@@ -1,0 +1,88 @@
+{
+  "runId" : "run-20261014-133140-brownfield",
+  "scenario" : "brownfield",
+  "agents" : "claude-opus-5-5",
+  "startedAt" : "2026-10-14T11:31:40.604384Z",
+  "outcome" : "OK",
+  "stopReason" : null,
+  "wallClockMs" : 301215,
+  "humanWaitMs" : 0,
+  "agentTimeMs" : 301215,
+  "stagesSucceeded" : 10,
+  "stagesFailed" : 0,
+  "stagesBlocked" : 0,
+  "stagesSkipped" : 0,
+  "stagesReused" : 0,
+  "stageExecutions" : 10,
+  "retries" : 0,
+  "rollbacks" : 0,
+  "fallbacks" : 0,
+  "policyBlocks" : 0,
+  "approvalsGranted" : 2,
+  "approvalsRejected" : 0,
+  "revisionsRequested" : 0,
+  "replans" : 0,
+  "recoveryTimesMs" : [ ],
+  "unrecoveredFailures" : 0,
+  "stages" : [ {
+    "stageId" : "requirements",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 23681,
+    "reused" : false
+  }, {
+    "stageId" : "clarify",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 1,
+    "reused" : false
+  }, {
+    "stageId" : "plan",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 24336,
+    "reused" : false
+  }, {
+    "stageId" : "impact-analysis",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 60718,
+    "reused" : false
+  }, {
+    "stageId" : "design",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 90256,
+    "reused" : false
+  }, {
+    "stageId" : "implement",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 63638,
+    "reused" : false
+  }, {
+    "stageId" : "tests",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 118639,
+    "reused" : false
+  }, {
+    "stageId" : "docs",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 38151,
+    "reused" : false
+  }, {
+    "stageId" : "validate",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 6928,
+    "reused" : false
+  }, {
+    "stageId" : "release",
+    "status" : "SUCCEEDED",
+    "attempts" : 1,
+    "durationMs" : 604,
+    "reused" : false
+  } ]
+}

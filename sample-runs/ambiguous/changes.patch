@@ -1,0 +1,177 @@
+diff --git a/docs/features/reliability.md b/docs/features/reliability.md
+new file mode 100644
+index 0000000..3ba2ecb
+--- /dev/null
++++ b/docs/features/reliability.md
+@@ -0,0 +1,42 @@
++# Reliability and operations
++
++How the service behaves when things go wrong, and how a platform should run it.
++
++## Health probes
++
++| Endpoint | Meaning | Platform action when it fails |
++|----------|---------|-------------------------------|
++| `GET /actuator/health/liveness` | The process is alive | Restart the instance |
++| `GET /actuator/health/readiness` | The instance can serve traffic | Stop routing traffic to it |
++| `GET /actuator/health` | Combined status | Monitoring |
++
++Kubernetes example:
++
++```yaml
++livenessProbe:
++  httpGet: { path: /actuator/health/liveness, port: 8080 }
++readinessProbe:
++  httpGet: { path: /actuator/health/readiness, port: 8080 }
++terminationGracePeriodSeconds: 30
++```
++
++## Database unavailable
++
++Connection attempts give up after 2 seconds. The request then fails with:
++
++```
++HTTP/1.1 503 Service Unavailable
++Retry-After: 5
++
++{"title": "Service Unavailable", "status": 503, "detail": "The service is temporarily unavailable. Please retry shortly."}
++```
++
++Clients should retry after the `Retry-After` delay. Internal error details are never included in the response.
++
++## Shutdown
++
++Shutdown is graceful: the service stops accepting new requests and gives in-flight requests up to 20 seconds to finish. Set the platform's termination grace period above 20 seconds.
++
++## Not covered
++
++Data is still held in memory and is lost on restart. Durable storage is a separate decision.
+diff --git a/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java b/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java
+index 01f6a6b..535cd80 100644
+--- a/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java
++++ b/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java
+@@ -1,8 +1,12 @@
+ package com.agentic.shortener.web;
+ 
++import org.springframework.dao.DataAccessResourceFailureException;
++import org.springframework.http.HttpHeaders;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ProblemDetail;
++import org.springframework.http.ResponseEntity;
+ import org.springframework.http.converter.HttpMessageNotReadableException;
++import org.springframework.transaction.CannotCreateTransactionException;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RestControllerAdvice;
+ 
+@@ -13,6 +17,8 @@ import com.agentic.shortener.service.InvalidUrlException;
+ @RestControllerAdvice
+ public class ApiExceptionHandler {
+ 
++    static final String RETRY_AFTER_SECONDS = "5";
++
+     @ExceptionHandler(InvalidUrlException.class)
+     ProblemDetail invalidUrl(InvalidUrlException e) {
+         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
+@@ -28,4 +34,14 @@ public class ApiExceptionHandler {
+     ProblemDetail notFound(CodeNotFoundException e) {
+         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
+     }
++
++    // The database cannot be reached: a temporary condition, so 503 with a retry hint rather than 500.
++    // The exception message is not returned, because it can contain internal details.
++    @ExceptionHandler({DataAccessResourceFailureException.class, CannotCreateTransactionException.class})
++    ResponseEntity<ProblemDetail> databaseUnavailable(RuntimeException e) {
++        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
++                .header(HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS)
++                .body(ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
++                        "The service is temporarily unavailable. Please retry shortly."));
++    }
+ }
+diff --git a/shortener/src/main/resources/application.properties b/shortener/src/main/resources/application.properties
+index fc442e7..d86162b 100644
+--- a/shortener/src/main/resources/application.properties
++++ b/shortener/src/main/resources/application.properties
+@@ -13,6 +13,13 @@ spring.jpa.open-in-view=false
+ # Health check only; nothing else is exposed.
+ management.endpoints.web.exposure.include=health
+ 
++# Reliability: separate liveness and readiness probes for the platform,
++# fail fast when the database cannot be reached, and finish in-flight requests on shutdown.
++management.endpoint.health.probes.enabled=true
++spring.datasource.hikari.connection-timeout=2000
++server.shutdown=graceful
++spring.lifecycle.timeout-per-shutdown-phase=20s
++
+ # Public address used to build the short link returned to the caller.
+ shortener.base-url=http://localhost:8080
+ # POST /shorten requests allowed per client IP per window.
+diff --git a/shortener/src/test/java/com/agentic/shortener/ReliabilityIntegrationTest.java b/shortener/src/test/java/com/agentic/shortener/ReliabilityIntegrationTest.java
+new file mode 100644
+index 0000000..e70ae36
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/ReliabilityIntegrationTest.java
+@@ -0,0 +1,64 @@
++package com.agentic.shortener;
++
++import static org.mockito.ArgumentMatchers.anyString;
++import static org.mockito.Mockito.when;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
++import org.springframework.dao.DataAccessResourceFailureException;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.web.servlet.MockMvc;
++import org.springframework.transaction.CannotCreateTransactionException;
++
++import com.agentic.shortener.service.UrlService;
++
++/** Health probes, and what clients see when the database is unavailable. */
++@SpringBootTest
++@AutoConfigureMockMvc
++class ReliabilityIntegrationTest {
++
++    @Autowired
++    private MockMvc mockMvc;
++
++    @MockitoBean
++    private UrlService urlService;
++
++    @Test
++    void livenessAndReadinessProbesReportUp() throws Exception {
++        mockMvc.perform(get("/actuator/health/liveness"))
++                .andExpect(status().isOk())
++                .andExpect(jsonPath("$.status").value("UP"));
++        mockMvc.perform(get("/actuator/health/readiness"))
++                .andExpect(status().isOk())
++                .andExpect(jsonPath("$.status").value("UP"));
++    }
++
++    @Test
++    void databaseFailureReturns503WithRetryAfterAndNoInternalDetails() throws Exception {
++        when(urlService.resolve(anyString()))
++                .thenThrow(new DataAccessResourceFailureException("Connection refused: jdbc:h2:secret-host"));
++
++        mockMvc.perform(get("/abc1234"))
++                .andExpect(status().isServiceUnavailable())
++                .andExpect(header().string("Retry-After", "5"))
++                .andExpect(jsonPath("$.detail").value("The service is temporarily unavailable. Please retry shortly."))
++                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.not(
++                        org.hamcrest.Matchers.containsString("secret-host"))));
++    }
++
++    @Test
++    void transactionThatCannotStartAlsoReturns503() throws Exception {
++        when(urlService.stats(anyString()))
++                .thenThrow(new CannotCreateTransactionException("Could not open JPA EntityManager"));
++
++        mockMvc.perform(get("/stats/abc1234"))
++                .andExpect(status().isServiceUnavailable())
++                .andExpect(header().string("Retry-After", "5"));
++    }
++}

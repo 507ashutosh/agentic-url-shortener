@@ -1,0 +1,40 @@
+# impact-analysis
+
+**Summary:** 8 files impacted across schema, entity, service, controller, DTOs and error handling; rate limiting and code generation unaffected
+
+## Decisions and assumptions
+
+- **DECISION:** Make the new column nullable — because existing rows have no expiry, and null means "never expires", so no data migration is needed _(based on: requirements)_
+- **DECISION:** Keep the one-argument UrlService.shorten(String) — because existing callers and tests use it; it delegates with no expiry _(based on: requirements)_
+
+## Report
+
+## Impacted
+
+| Area | File | Change |
+|------|------|--------|
+| Schema | `shortener/src/main/resources/schema.sql` | add nullable `expires_at TIMESTAMP(6) WITH TIME ZONE` |
+| Entity | `domain/UrlMapping.java` | add `expiresAt` field and an "is expired at" check |
+| Service | `service/UrlService.java` | accept `expiresInDays`, validate the range, compute `expiresAt`, refuse expired links in `resolve` |
+| New exceptions | `service/` | one for an invalid expiry (400), one for an expired link (410) |
+| API input | `web/dto/ShortenRequest.java` | add optional `expiresInDays` |
+| API output | `web/dto/ShortenResponse.java`, `web/dto/StatsResponse.java` | add `expiresAt`; stats also `expired` |
+| Controller | `web/UrlController.java` | pass `expiresInDays` through; fill the new response fields |
+| Errors | `web/ApiExceptionHandler.java` | map the new exceptions to 400 and 410 |
+
+## Data flow
+
+`POST /shorten` → controller → `UrlService.shorten(url, expiresInDays)` → entity with `expiresAt` → `url_mapping.expires_at`.
+`GET /{code}` → `UrlService.resolve` → load mapping → compare `expiresAt` with the injected `Clock` → 302 or 410.
+
+## Not impacted
+
+- `RateLimitFilter` / `RateLimiter`: only limit `POST /shorten`, unaffected by the new field.
+- `CodeGenerator`, `UrlValidator`: unchanged.
+- `UrlMappingRepository`: `recordClick` is unchanged; expiry is checked before it is called.
+
+## Risks
+
+- Schema change on a shared table: needs change-control approval before release.
+- Time-based logic is easy to test badly; the injected `Clock` must be used everywhere, never `Instant.now()`.
+- Existing clients must see no difference when they omit `expiresInDays`.

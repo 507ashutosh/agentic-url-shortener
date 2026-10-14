@@ -1,0 +1,32 @@
+# impact-analysis
+
+**Summary:** 2 files impacted: application.properties and ApiExceptionHandler; no schema, API or dependency change
+
+## Decisions and assumptions
+
+- **DECISION:** No schema or API change — because the selected reliability gaps are operational and sit in configuration and error mapping _(based on: requirements)_
+
+## Report
+
+## Impacted
+
+| Area | File | Change |
+|------|------|--------|
+| Configuration | `shortener/src/main/resources/application.properties` | health probes, connection timeout, graceful shutdown |
+| Error mapping | `shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java` | database-unavailable exceptions → 503 |
+
+## Findings in the current code
+
+- `management.endpoints.web.exposure.include=health` exposes one combined health endpoint; probe groups are not enabled.
+- No `spring.datasource.hikari.connection-timeout`: the pool default is 30 seconds.
+- No `server.shutdown` setting: the default is immediate.
+- `ApiExceptionHandler` maps validation and not-found errors only; data-access failures fall through to a generic 500.
+
+## Not impacted
+
+Controller, service, repository, rate limiting, schema, `pom.xml`. The rate limiter already protects creation from traffic spikes.
+
+## Risks
+
+- A too-short connection timeout could cause false 503s under load; 2 s is well above normal local connection time.
+- Graceful shutdown lengthens deploys by up to the configured grace period.

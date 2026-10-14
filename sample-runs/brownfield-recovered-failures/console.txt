@@ -1,0 +1,77 @@
+Scenario: Link expiry (brownfield) · agents: scripted (mock/brownfield), injected faults [tests:error, docs:secret, design:outage]
+Requirement: "Links should expire after N days."
+Approvals: automatic · run folder: runs/run-20261014-133757-brownfield
+
+Pipeline 'sdlc-brownfield' · 10 stages · 7 waves
+  wave 1: requirements
+  wave 2: clarify
+  wave 3: plan, impact-analysis   (parallel)
+  wave 4: design
+  wave 5: implement, tests, docs   (parallel)
+  wave 6: validate
+  wave 7: release
+
+  [+ 0.01s]  ▶ requirements
+  [+ 0.01s]  ✓ requirements     0.00s  Optional per-link expiry in whole days; expired links stop redirecting and return 410 Gone
+  [+ 0.01s]  ▶ clarify
+  [+ 0.02s]  ✓ clarify          0.00s  2 question(s) left open; assumptions accepted by auto (--auto-approve)
+  [+ 0.02s]  ▶ impact-analysis
+  [+ 0.02s]  ▶ plan
+  [+ 0.02s]  ✓ plan             0.00s  9 tasks; schema and domain first, then code, tests and docs in parallel, then validation and release
+  [+ 0.02s]  ✓ impact-analysis  0.01s  8 files impacted across schema, entity, service, controller, DTOs and error handling; rate limiting and code generation unaffected
+  [+ 0.02s]  ▶ design
+  [+ 0.03s]  ↻ design           attempt 1/3 failed: injected outage: model unavailable · retrying
+  [+ 0.56s]  ⤳ design           fallback: primary model failed 2 times; switching to scripted (mock/brownfield)
+  [+ 0.56s]  ↻ design           attempt 2/3 failed: injected outage: model unavailable · retrying
+  [+ 1.08s]  ✓ design           1.05s  Nullable expires_at column, optional expiresInDays (1-3650), 410 Gone for expired links, expiry shown in responses  (attempt 3)
+  [+ 1.08s]  ▶ docs
+  [+ 1.08s]  ▶ implement
+  [+ 1.08s]  ▶ tests
+  [+ 1.12s]  ⛔ docs             policy-check: security/secret-scan: possible secret added in docs/features/link-expiry.md
+  [+ 1.14s]  ↻ tests            attempt 1/3 failed: injected transient error (tests) · retrying
+  [+ 1.31s]  ↺ docs             rolled back: 1 file reverted
+  [+ 1.31s]  ↻ docs             attempt 1/3 failed: security/secret-scan: possible secret added in docs/features/link-expiry.md · retrying
+  [+ 1.48s]  ✓ implement        0.40s  Expiry implemented in 10 files: schema, entity, service, 2 new exceptions, DTOs, controller, error mapping
+  [+ 1.76s]  ✓ tests            0.69s  2 new test classes: unit tests for the expiry rules and an end-to-end test with a controllable clock  (attempt 2)
+  [+ 1.88s]  ✓ docs             0.81s  Feature guide for link expiry with request/response examples, error cases and migration notes  (attempt 2)
+  [+ 1.89s]  ▶ validate
+  [+ 8.18s]  ✓ validate         6.29s  build OK, 49 tests run, 0 failures, 0 errors
+  [+ 8.18s]  ▶ release
+  [+ 8.39s]  ✓ release          0.21s  5 added, 8 modified, 0 deleted · patch: runs/run-20261014-133757-brownfield/changes.patch
+
+Run OK · 10 succeeded, 0 failed, 0 blocked, 0 skipped
+4 retries · 1 rollback · wall clock 8.40s · sum of stage times 9.47s
+
+Decision lineage:
+  [requirements] ASSUMPTION N is chosen per link by the caller when shortening, not a single global setting
+  [requirements] ASSUMPTION Links created without an expiry never expire, so existing clients and existing links behave exactly as today
+  [requirements] ASSUMPTION N is a whole number of days between 1 and 3650 (10 years)
+  [requirements] ASSUMPTION An expired link answers 410 Gone (the resource existed but is gone), not 404
+  [requirements] ASSUMPTION Stats stay readable after expiry so owners can still see historical clicks
+  [requirements] QUESTION   Should expired links be deleted after a retention period, or kept forever for stats?
+  [requirements] QUESTION   Should the service enforce a default maximum expiry for all new links?
+  [plan] DECISION   Write tests from the design contract in parallel with the implementation  ← requirements
+  [impact-analysis] DECISION   Make the new column nullable  ← requirements
+  [impact-analysis] DECISION   Keep the one-argument UrlService.shorten(String)  ← requirements
+  [design] DECISION   Add nullable column expires_at to url_mapping  ← requirements, plan, impact-analysis
+  [design] DECISION   Return 410 Gone for expired links  ← requirements, plan, impact-analysis
+  [design] DECISION   Expiry is inclusive: expired when now >= expiresAt  ← requirements, plan, impact-analysis
+  [design] DECISION   Do not count clicks on expired links  ← requirements, plan, impact-analysis
+  [design] DECISION   Validate expiresInDays in the service, not the controller  ← requirements, plan, impact-analysis
+  [implement] DECISION   Compute expired-state in the controller from the injected Clock  ← requirements, design
+  [tests] DECISION   Replace the clock in the integration test with a @Primary test clock  ← requirements, design
+  [tests] ASSUMPTION The service exposes MAX_EXPIRY_DAYS = 3650 and the exception names given in the design  ← requirements, design
+
+Approvals:
+  [clarify] governance/requirements-clarification APPROVED by auto (--auto-approve) after 0.0s
+  [implement] change-control/db-migration  APPROVED by auto (--auto-approve) after 0.0s
+  [release] change-control/release       APPROVED by auto (--auto-approve) after 0.0s
+
+Policy findings:
+  [docs] security/secret-scan         BLOCK · possible secret added in docs/features/link-expiry.md
+  [implement] change-control/db-migration  REQUIRES_APPROVAL · database schema change
+
+Time: 8.5s total · 8.5s agents and tools · 0.0s waiting for approvals
+Stage reports: runs/run-20261014-133757-brownfield/artifacts
+Audit log:     runs/run-20261014-133757-brownfield/audit.jsonl (hash chain verified)
+Run summary:   runs/run-20261014-133757-brownfield/run-summary.json · all runs: --metrics

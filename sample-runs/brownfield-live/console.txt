@@ -1,0 +1,135 @@
+Scenario: Link expiry (brownfield) · agents: claude-opus-5-5
+Requirement: "Links should expire after N days."
+Approvals: automatic · run folder: runs/run-20261014-133140-brownfield
+
+Pipeline 'sdlc-brownfield' · 10 stages · 7 waves
+  wave 1: requirements
+  wave 2: clarify
+  wave 3: plan, impact-analysis   (parallel)
+  wave 4: design
+  wave 5: implement, tests, docs   (parallel)
+  wave 6: validate
+  wave 7: release
+
+  [+ 0.01s]  ▶ requirements
+  [+23.69s]  ✓ requirements     23.68s  Turned "links should expire after N days" into a scoped requirement with testable acceptance criteria, recorded assumptions and open questions.
+  [+23.69s]  ▶ clarify
+  [+23.69s]  ✓ clarify          0.00s  7 question(s) left open; assumptions accepted by auto (--auto-approve)
+  [+23.69s]  ▶ plan
+  [+23.69s]  ▶ impact-analysis
+  [+48.03s]  ✓ plan             24.34s  Broke the link-expiry requirement into 16 dependency-ordered tasks across design, implement, tests, docs, validate and release, and marked which can run in parallel.
+  [+84.41s]  ✓ impact-analysis  60.72s  Impact analysis for global N-day link expiry. No schema change is needed because `created_at` already exists and is NOT NULL. The changes are the config properties, `UrlService.resolve`, the exception handler, two response DTOs, the controller's OpenAPI docs and the tests.
+  [+84.41s]  ▶ design
+  [+174.67s]  ✓ design           90.26s  Technical design for global N-day link expiry. It covers the exact config property, the new `LinkExpiryPolicy` and `LinkExpiredException`, the changed constructor and method signatures, the 410 contract, the `expiresAt` field on two DTOs, no schema change, and a test and docs split that the implement, tests and docs agents can follow in parallel.
+  [+174.67s]  ▶ implement
+  [+174.67s]  ▶ docs
+  [+174.67s]  ▶ tests
+  [+212.82s]  ✓ docs             38.15s  Created `docs/features/link-expiry.md`, the user-facing guide to global N-day link expiry. It covers behaviour, API changes with curl examples, error cases, the `shortener.link.expiry-days` setting and upgrade notes.
+  [+238.31s]  ✓ implement        63.64s  Implemented global N-day link expiry as designed: the `shortener.link.expiry-days` property (default 30, minimum 1), `LinkExpiryPolicy`, `LinkExpiredException` mapped to 410, `expiresAt` on `/shorten` and `/stats`, and the OpenAPI and properties docs.
+  [+293.31s]  ✓ tests            118.64s  Added expiry tests covering the policy, service, properties binding, a fixed-clock integration test for AC3–AC8 and an API-contract integration test; changed only the constructor call in `UrlServiceTest` so it compiles.
+  [+293.31s]  ▶ validate
+  [+300.24s]  ✓ validate         6.93s  build OK, 64 tests run, 0 failures, 0 errors
+  [+300.24s]  ▶ release
+  [+300.85s]  ✓ release          0.60s  8 added, 9 modified, 0 deleted · patch: runs/run-20261014-133140-brownfield/changes.patch
+
+Run OK · 10 succeeded, 0 failed, 0 blocked, 0 skipped
+0 retries · 0 rollbacks · wall clock 300.85s · sum of stage times 426.96s
+
+Decision lineage:
+  [requirements] DECISION   N is a single global, configurable value in this iteration, not set per link
+  [requirements] DECISION   Expiry is measured from the link's creation timestamp
+  [requirements] DECISION   Expired links stop resolving but are not physically deleted as part of this requirement
+  [requirements] ASSUMPTION N is set through Spring configuration, e.g. `shortener.link.expiry-days`, and applies to all links.
+  [requirements] ASSUMPTION The default N is 30 days. This is a placeholder until a human confirms it.
+  [requirements] ASSUMPTION A link expires at exactly `createdAt + N × 24h`, computed in UTC from an injectable `java.time.Clock` so tests can control time. Calendar-day and timezone semantics are not used.
+  [requirements] ASSUMPTION Resolving an expired link returns HTTP 410 Gone with no redirect. A link that never existed keeps its current response, presumably 404.
+  [requirements] ASSUMPTION Expiry is computed at resolve time from `createdAt` and the current N. Changing N therefore affects existing links too.
+  [requirements] ASSUMPTION Existing links that are already older than N days become expired as soon as the feature is deployed.
+  [requirements] ASSUMPTION The short code of an expired link is not reissued to a new link.
+  [requirements] ASSUMPTION Link creation and lookup API responses expose an `expiresAt` field. This is a minor additive change.
+  [requirements] QUESTION   What should N be by default, and must it be per-environment configurable only, or should API callers be able to set a per-link expiry?
+  [requirements] QUESTION   Should expiry count from creation (fixed) or from last access (sliding)?
+  [requirements] QUESTION   Should expiry apply retroactively to existing links? This could break many live links at deploy time, which is high impact. Should there be a grace period or migration instead?
+  [requirements] QUESTION   What should an expired link return: 410 Gone, 404 Not Found, or a redirect to an "expired" page?
+  [requirements] QUESTION   Should expired links eventually be purged from storage, and may their short codes be reused?
+  [requirements] QUESTION   Should some links be able to never expire (e.g., N = 0 or a per-link flag)?
+  [requirements] QUESTION   Is "days" meant as 24-hour periods (assumed) or calendar days in some timezone?
+  [plan] DECISION   Start with a discovery task (T1) before any implementation.  ← requirements
+  [plan] DECISION   Make the migration (T8) and cache fix (T9) conditional tasks.  ← requirements
+  [plan] DECISION   Put a human approval gate (T16) before release.  ← requirements
+  [plan] DECISION   Use a typed, validated configuration-properties class for `shortener.link.expiry-days`.  ← requirements
+  [plan] DECISION   Define "expired" as `now >= createdAt + N days`.  ← requirements
+  [plan] ASSUMPTION `expiresAt` is computed from `createdAt` and N each time, never stored. This follows from criterion 9: changing N and restarting changes expiry for all links.  ← requirements
+  [plan] ASSUMPTION Short codes are never reused today, because generation checks for existing codes and nothing deletes them. Criterion 8 therefore needs only test coverage, not new logic. T1 confirms this.  ← requirements
+  [plan] ASSUMPTION The expiry check runs in the service layer, not in a scheduled job. Purge jobs are out of scope.  ← requirements
+  [plan] QUESTION   Has a human approved retroactive expiry of links created before this feature (criterion 7)? Or should existing links get a grace period?  ← requirements
+  [plan] QUESTION   If `createdAt` is missing for existing rows, what backfill value is approved? Options include migration time or a known historical date.  ← requirements
+  [plan] QUESTION   What status do unknown codes return today (for example 404)? Tests in T12 need this to pin the "unchanged" behaviour.  ← requirements
+  [impact-analysis] DECISION   Compute `expiresAt` on the fly as `createdAt + N days` and do not persist an `expires_at` column  ← requirements
+  [impact-analysis] DECISION   Put the expiry logic in one place, a new `LinkExpiryPolicy` component (or equivalent methods on `UrlService`), used by both the service and the controller  ← requirements
+  [impact-analysis] DECISION   Treat `GET /stats/{code}` as the "link lookup" endpoint. It gains `expiresAt` but keeps returning 200 for expired links  ← requirements
+  [impact-analysis] DECISION   Treat "N days" as `Duration.ofDays(N)`, that is N × 24h on UTC instants  ← requirements
+  [impact-analysis] ASSUMPTION A redirect to an expired link does NOT increment `click_count` or update `last_accessed_at`. The requirement says no redirect happens, so no click is counted.  ← requirements
+  [impact-analysis] ASSUMPTION The expiry check and any click recording use a single `clock.instant()` value captured once per request.  ← requirements
+  [impact-analysis] ASSUMPTION The 410 body is an RFC 9457 problem detail, matching the existing error style.  ← requirements
+  [impact-analysis] ASSUMPTION The 404 body for unknown codes stays exactly as it is today.  ← requirements
+  [impact-analysis] ASSUMPTION Other agents add no new dependency (for example `spring-boot-starter-validation`) unless they choose it. Validating in the record's compact constructor works without one.  ← requirements
+  [impact-analysis] QUESTION   Which datasource does production use? The only config shown is in-memory H2 (`jdbc:h2:mem`), so no rows survive a restart and criterion 7 has no real effect at deploy. If production uses a persistent database, how many live links are older than 30 days and would start returning 410 on deploy? This needs human approval.  ← requirements
+  [impact-analysis] QUESTION   Should `/stats/{code}` for an expired link keep returning 200 (assumed here), or should it also signal expiry, for example with an `expired: true` flag or a 410?  ← requirements
+  [impact-analysis] QUESTION   Should a request to an expired link be counted anywhere, such as a separate counter or a log/metric? It is currently assumed to be not counted.  ← requirements
+  [impact-analysis] QUESTION   Should the 410 response carry `Cache-Control: no-store`? Under RFC 9111, 410 is cacheable by default. A cached 410 could outlive an increase of N (criterion 9 revives links).  ← requirements
+  [design] DECISION   No schema change, migration or backfill. Expiry is computed as `createdAt + N days`, never stored.  ← requirements, plan, impact-analysis
+  [design] DECISION   Add a nested record `ShortenerProperties.Link(int expiryDays)` as a third component `link` of `ShortenerProperties`. Put `@DefaultValue` on the `link` component and `@DefaultValue("30")` on `expiryDays`. A compact constructor throws `IllegalArgumentException` when the value is below 1.  ← requirements, plan, impact-analysis
+  [design] DECISION   "N days" means `Duration.ofDays(N)` (N × 24h) added to the UTC `Instant`. A link is expired when `!now.isBefore(expiresAt)`, which is the same as `now >= expiresAt`.  ← requirements, plan, impact-analysis
+  [design] DECISION   New `@Component` `LinkExpiryPolicy(ShortenerProperties)` with `Instant expiresAt(UrlMapping)` and `boolean isExpired(UrlMapping, Instant now)`. It holds no `Clock`.  ← requirements, plan, impact-analysis
+  [design] DECISION   `UrlService.resolve` reads `now` once, looks up the link (404 if missing), then throws `LinkExpiredException` before `recordClick` if the link is expired.  ← requirements, plan, impact-analysis
+  [design] DECISION   `LinkExpiredException` maps to `ProblemDetail` with status 410 in `ApiExceptionHandler`.  ← requirements, plan, impact-analysis
+  [design] DECISION   Append `Instant expiresAt` as the last component of `ShortenResponse` and `StatsResponse`. The controller fills it from `LinkExpiryPolicy`.  ← requirements, plan, impact-analysis
+  [design] DECISION   `UrlService.shorten` truncates `clock.instant()` to `ChronoUnit.MICROS` before saving.  ← requirements, plan, impact-analysis
+  [design] DECISION   `GET /stats/{code}` keeps returning 200 for expired links, with their `expiresAt`.  ← requirements, plan, impact-analysis
+  [design] DECISION   No cache headers are added to the 410 response in this change.  ← requirements, plan, impact-analysis
+  [design] ASSUMPTION The "link lookup response" in AC6 is `GET /stats/{code}` (`StatsResponse`). There is no other lookup endpoint.  ← requirements, plan, impact-analysis
+  [design] ASSUMPTION Spring Boot 4 / Jackson 3 serialises `Instant` as an ISO-8601 string ending in `Z` (Jackson 3 defaults `WRITE_DATES_AS_TIMESTAMPS` to false). Tests must assert the format explicitly. If this assumption fails, the implement agent must configure it, not change the contract.  ← requirements, plan, impact-analysis
+  [design] ASSUMPTION "Names the property" in AC2 is satisfied if the startup failure's exception chain or stack trace contains `shortener.link.expiry-days`. It is not required to be in the top-level message.  ← requirements, plan, impact-analysis
+  [design] ASSUMPTION Expired links are not counted as clicks, and resolving them does not update `lastAccessedAt`.  ← requirements, plan, impact-analysis
+  [design] ASSUMPTION The 410 body is the default `ProblemDetail` rendered as `application/problem+json`, with no extra fields such as `expiresAt`.  ← requirements, plan, impact-analysis
+  [design] QUESTION   Do you approve retroactive expiry (AC7)? With the default N=30, every link older than 30 days returns 410 immediately on deploy. What datasource does production use? The configured H2 is in-memory, so the real exposure depends on that.  ← requirements, plan, impact-analysis
+  [design] QUESTION   Should the 410 response send `Cache-Control: no-store`? Without it, raising N later (AC9) may not revive links for clients or proxies that cached the heuristically cacheable 410.  ← requirements, plan, impact-analysis
+  [design] QUESTION   Should `GET /stats/{code}` behave differently for expired links, for example by adding an `expired` boolean, instead of returning a normal 200?  ← requirements, plan, impact-analysis
+  [docs] DECISION   Put all the content the design asked for in the README section and CHANGELOG entry into one file, `docs/features/link-expiry.md`.  ← requirements, design
+  [docs] DECISION   Left out bodies for 404, 400 and 429 responses and said only that they are unchanged.  ← requirements, design
+  [docs] DECISION   Described the expiry window as exactly N×24 hours in UTC, not N calendar days.  ← requirements, design
+  [docs] DECISION   Marked the retroactive expiry of existing links as "pending human approval" in the upgrade notes.  ← requirements, design
+  [docs] ASSUMPTION Examples use the base URL `http://localhost:8080`, matching the `shortUrl` example in the design.  ← requirements, design
+  [docs] ASSUMPTION Existing rows already have a usable `createdAt`, because the design says no schema change or backfill is needed.  ← requirements, design
+  [docs] ASSUMPTION The default UTC timestamp format (no fractional seconds when they are zero) applies to `createdAt` and `lastAccessedAt` as well as `expiresAt`. The doc only states the format rule for `expiresAt`.  ← requirements, design
+  [docs] QUESTION   Should someone with access outside `docs/` add the README section and CHANGELOG entry the design asks for, perhaps by linking to this file? Or is this feature doc enough?  ← requirements, design
+  [docs] QUESTION   Has the retroactive expiry been approved? If so, should the doc give a specific value of N or an approved migration approach (for example, temporarily raising N) for the first deploy?  ← requirements, design
+  [docs] QUESTION   Is any redirect caching in place, such as a CDN, a reverse proxy or `Cache-Control` on the 302? The requirements say caches must not serve a link past `expiresAt`, but the design does not cover this, so the doc does not mention it.  ← requirements, design
+  [implement] DECISION   Changed the `UrlService` constructor to the design's exact 5-argument signature and did not keep the old 4-argument one  ← requirements, design
+  [implement] DECISION   `resolve` reads `clock.instant()` once, before the lookup, and uses that value for both the expiry check and `recordClick`  ← requirements, design
+  [implement] DECISION   The 410 body uses `ProblemDetail.forStatusAndDetail`, the same as the existing 404 handler  ← requirements, design
+  [implement] DECISION   Added no `Cache-Control` headers  ← requirements, design
+  [implement] ASSUMPTION No production code calls the old two-argument `ShortenerProperties(baseUrl, rateLimit)` constructor; I checked only `src/main`. Tests that build the record directly must pass a `Link`, as the design's `LinkExpiryPolicyTest` already does.  ← requirements, design
+  [implement] ASSUMPTION Boot 4 with Jackson 3 serialises `Instant` as ISO-8601 with a `Z` suffix and trims trailing zero fractions. This is already the case for `createdAt` today. `shorten` truncates to microseconds, so at most 6 fractional digits appear.  ← requirements, design
+  [implement] QUESTION   Retroactive expiry (AC7) will break every existing link older than 30 days as soon as this is deployed. Does a human approve this behaviour and the default N=30 for release, or should the first rollout use a larger N?  ← requirements, design
+  [implement] QUESTION   Should the old 4-argument `UrlService` constructor stay as a deprecated overload for any callers outside this repository? I assumed there are none.  ← requirements, design
+  [tests] DECISION   `UrlServiceTest` changes only the `UrlService` constructor call. The new service tests go in `UrlServiceExpiryTest`.  ← requirements, design
+  [tests] DECISION   The design's `ShortenerIntegrationTest` assertions (`expiresAt` format and the 410 entry in `/v3/api-docs`) are in a new `LinkExpiryApiContractIntegrationTest` instead.  ← requirements, design
+  [tests] DECISION   AC8 "codes never reassigned" is tested end to end with `@MockitoSpyBean CodeGenerator`. The spy is forced to return the code of an expired link first.  ← requirements, design
+  [tests] DECISION   The 410 test asserts `title`, `status`, `detail`, `instance` and the `application/problem+json` content type.  ← requirements, design
+  [tests] ASSUMPTION Jackson writes `Instant` values as ISO-8601 strings that match `Instant.toString()` (no fractional seconds when they are zero), as the design's `expiresAt` rules state.  ← requirements, design
+  [tests] ASSUMPTION Spring fills in `ProblemDetail.instance` with the request path when the handler leaves it null.  ← requirements, design
+  [tests] ASSUMPTION The H2 database `jdbc:h2:mem:shortener` is shared across contexts and test methods in one JVM. Each seeded code is therefore used exactly once: `exp0001` to `exp0006` and `fresh06`.  ← requirements, design
+  [tests] ASSUMPTION AC2's "fails to start" is checked at the binding level with `ApplicationContextRunner`, as the design specifies. No full application boot is attempted.  ← requirements, design
+  [tests] QUESTION   Should a human approve retroactive expiry (AC7) before release? The tests assert it, but the release gate in the design is still open.  ← requirements, design
+  [tests] QUESTION   AC9 (restart with a new N) is checked only at the policy level, by comparing N=7 and N=30 on the same mapping. Is that enough, or is a restart-style test with two contexts wanted?  ← requirements, design
+
+Approvals:
+  [clarify] governance/requirements-clarification APPROVED by auto (--auto-approve) after 0.0s
+  [release] change-control/release       APPROVED by auto (--auto-approve) after 0.0s
+
+Time: 301.2s total · 301.2s agents and tools · 0.0s waiting for approvals
+Stage reports: runs/run-20261014-133140-brownfield/artifacts
+Audit log:     runs/run-20261014-133140-brownfield/audit.jsonl (hash chain verified)
+Run summary:   runs/run-20261014-133140-brownfield/run-summary.json · all runs: --metrics

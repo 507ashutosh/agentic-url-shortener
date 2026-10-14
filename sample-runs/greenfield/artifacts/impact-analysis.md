@@ -1,0 +1,24 @@
+# impact-analysis
+
+**Summary:** Greenfield: no existing source code, so nothing is impacted; the build file already provides the needed libraries
+
+## Decisions and assumptions
+
+- **DECISION:** Use the libraries already declared in shortener/pom.xml (Spring Web MVC, Data JPA, Actuator, H2, springdoc) — because no new dependency means no dependency-change approval and no new supply-chain risk _(based on: requirements)_
+
+## Report
+
+## Existing code
+
+Only `shortener/pom.xml` exists. There is no Java code, configuration, schema or test to change.
+
+## Constraints from the build file
+
+- Java 25, Spring Boot 4.1
+- Spring Web MVC, Spring Data JPA, Actuator, H2 (runtime), springdoc-openapi
+- Test stack: JUnit 5, AssertJ, Mockito, MockMvc
+
+## Risks
+
+- Everything is new: the whole change set must be reviewed, and it will exceed the per-stage file limit (blast-radius approval expected).
+- A new database schema needs change-control approval.

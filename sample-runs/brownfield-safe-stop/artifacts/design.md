@@ -1,0 +1,46 @@
+# design
+
+**Summary:** Nullable expires_at column, optional expiresInDays (1-3650), 410 Gone for expired links, expiry shown in responses
+
+## Decisions and assumptions
+
+- **DECISION:** Add nullable column expires_at to url_mapping — because null means never expires, so existing rows need no backfill _(based on: requirements, plan, impact-analysis)_
+- **DECISION:** Return 410 Gone for expired links — because it tells clients the link existed but is no longer available, unlike 404 _(based on: requirements, plan, impact-analysis)_
+- **DECISION:** Expiry is inclusive: expired when now >= expiresAt — because a 1-day link must stop working exactly 24 hours after creation _(based on: requirements, plan, impact-analysis)_
+- **DECISION:** Do not count clicks on expired links — because a click that does not redirect is not a visit _(based on: requirements, plan, impact-analysis)_
+- **DECISION:** Validate expiresInDays in the service, not the controller — because the rule applies to every caller of the service _(based on: requirements, plan, impact-analysis)_
+
+## Report
+
+## API contract
+
+`POST /shorten`
+- Request: `{"url": "https://example.com", "expiresInDays": 7}`; `expiresInDays` optional integer, 1..3650.
+- 201 response: `{"code", "shortUrl", "originalUrl", "expiresAt"}`; `expiresAt` is ISO-8601 UTC or null.
+- 400 if `expiresInDays` is outside 1..3650, detail: `expiresInDays must be between 1 and 3650`.
+
+`GET /{code}`
+- 302 as today while not expired.
+- 410 Gone once expired, detail: `Short link '<code>' has expired`.
+
+`GET /stats/{code}`
+- 200 response adds `expiresAt` (nullable) and `expired` (boolean).
+
+## Schema
+
+```sql
+expires_at TIMESTAMP(6) WITH TIME ZONE   -- nullable, added to url_mapping
+```
+
+In production this ships as a separate migration (`ALTER TABLE url_mapping ADD COLUMN expires_at ...`); here the in-memory schema is defined in `schema.sql`.
+
+## Classes
+
+- `UrlMapping`: field `Instant expiresAt`; constructor `UrlMapping(String code, String originalUrl, Instant createdAt, Instant expiresAt)` (the existing 3-argument constructor stays and passes null); `Instant getExpiresAt()`; `boolean isExpiredAt(Instant now)` returns `expiresAt != null && !now.isBefore(expiresAt)`.
+- `UrlService`: constant `MAX_EXPIRY_DAYS = 3650`; new `UrlMapping shorten(String url, Integer expiresInDays)`; existing `shorten(String url)` calls it with null; `resolve(code)` throws `LinkExpiredException` when expired and does not call `recordClick`.
+- New `service.InvalidExpiryException` (400) and `service.LinkExpiredException(String code)` (410), both `RuntimeException`.
+- `ShortenRequest(String url, Integer expiresInDays)`.
+- `ShortenResponse(String code, String shortUrl, String originalUrl, Instant expiresAt)`.
+- `StatsResponse(String code, String originalUrl, long clickCount, Instant createdAt, Instant lastAccessedAt, Instant expiresAt, boolean expired)`.
+- `UrlController` gets the `Clock` bean to compute `expired` for stats.
+- `ApiExceptionHandler`: `InvalidExpiryException` → 400, `LinkExpiredException` → 410.

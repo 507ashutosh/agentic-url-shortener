@@ -1,0 +1,1175 @@
+diff --git a/docs/features/url-shortener.md b/docs/features/url-shortener.md
+new file mode 100644
+index 0000000..4a4792e
+--- /dev/null
++++ b/docs/features/url-shortener.md
+@@ -0,0 +1,60 @@
++# URL shortener API
++
++Turns long URLs into short links, redirects visitors and counts clicks.
++Interactive documentation: `http://localhost:8080/swagger-ui.html` · OpenAPI spec: `/v3/api-docs`.
++
++## Create a short link
++
++```bash
++curl -X POST localhost:8080/shorten -H 'Content-Type: application/json' \
++  -d '{"url": "https://example.com/some/long/path"}'
++```
++
++`201 Created`, with the short URL in the `Location` header:
++
++```json
++{"code": "Ab3dE9x", "shortUrl": "http://localhost:8080/Ab3dE9x", "originalUrl": "https://example.com/some/long/path"}
++```
++
++## Follow a short link
++
++`GET /Ab3dE9x` answers `302 Found` with `Location: https://example.com/some/long/path`, and counts the click.
++
++## Statistics
++
++```bash
++curl localhost:8080/stats/Ab3dE9x
++```
++
++```json
++{"code": "Ab3dE9x", "originalUrl": "https://example.com/some/long/path", "clickCount": 3,
++ "createdAt": "2026-10-14T10:00:00Z", "lastAccessedAt": "2026-10-14T10:05:00Z"}
++```
++
++## Errors
++
++All errors are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details:
++
++| Case | Status |
++|------|--------|
++| URL missing, malformed, not http(s), or longer than 2048 characters | 400 |
++| Body is not JSON | 400 |
++| Unknown code | 404 |
++| More than 20 links created from one IP in a minute | 429, with `Retry-After` |
++
++```json
++{"title": "Bad Request", "status": 400, "detail": "url must start with http:// or https://", "instance": "/shorten"}
++```
++
++## Configuration
++
++| Property | Default | Meaning |
++|----------|---------|---------|
++| `shortener.base-url` | `http://localhost:8080` | Prefix of returned short URLs |
++| `shortener.rate-limit.requests` | `20` | Links per client IP per window |
++| `shortener.rate-limit.window` | `1m` | Rate-limit window |
++
++## Operations
++
++- Health: `GET /actuator/health`
++- Data is held in memory (H2) and is lost on restart.
+diff --git a/shortener/src/main/java/com/agentic/shortener/ShortenerApplication.java b/shortener/src/main/java/com/agentic/shortener/ShortenerApplication.java
+new file mode 100644
+index 0000000..cfd5455
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/ShortenerApplication.java
+@@ -0,0 +1,23 @@
++package com.agentic.shortener;
++
++import java.time.Clock;
++
++import org.springframework.boot.SpringApplication;
++import org.springframework.boot.autoconfigure.SpringBootApplication;
++import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
++import org.springframework.context.annotation.Bean;
++
++@SpringBootApplication
++@ConfigurationPropertiesScan
++public class ShortenerApplication {
++
++    public static void main(String[] args) {
++        SpringApplication.run(ShortenerApplication.class, args);
++    }
++
++    /** One clock for the whole app, so tests can replace time. */
++    @Bean
++    Clock clock() {
++        return Clock.systemUTC();
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/config/OpenApiConfig.java b/shortener/src/main/java/com/agentic/shortener/config/OpenApiConfig.java
+new file mode 100644
+index 0000000..7e4e189
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/config/OpenApiConfig.java
+@@ -0,0 +1,22 @@
++package com.agentic.shortener.config;
++
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++
++import io.swagger.v3.oas.models.OpenAPI;
++import io.swagger.v3.oas.models.info.Info;
++
++/** Title and description shown in Swagger UI (/swagger-ui.html) and the spec (/v3/api-docs). */
++@Configuration
++public class OpenApiConfig {
++
++    @Bean
++    OpenAPI shortenerOpenApi() {
++        return new OpenAPI().info(new Info()
++                .title("URL Shortener API")
++                .version("0.1.0")
++                .description("""
++                        Create short links, follow them, and read click statistics.
++                        Errors use RFC 9457 problem details. Creating links is rate limited per client IP."""));
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/config/ShortenerProperties.java b/shortener/src/main/java/com/agentic/shortener/config/ShortenerProperties.java
+new file mode 100644
+index 0000000..6043c70
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/config/ShortenerProperties.java
+@@ -0,0 +1,13 @@
++package com.agentic.shortener.config;
++
++import java.time.Duration;
++
++import org.springframework.boot.context.properties.ConfigurationProperties;
++
++/** Settings under the {@code shortener.*} prefix in application.properties. */
++@ConfigurationProperties(prefix = "shortener")
++public record ShortenerProperties(String baseUrl, RateLimit rateLimit) {
++
++    public record RateLimit(int requests, Duration window) {
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/domain/UrlMapping.java b/shortener/src/main/java/com/agentic/shortener/domain/UrlMapping.java
+new file mode 100644
+index 0000000..2c1b9ab
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/domain/UrlMapping.java
+@@ -0,0 +1,69 @@
++package com.agentic.shortener.domain;
++
++import java.time.Instant;
++
++import jakarta.persistence.Column;
++import jakarta.persistence.Entity;
++import jakarta.persistence.GeneratedValue;
++import jakarta.persistence.GenerationType;
++import jakarta.persistence.Id;
++import jakarta.persistence.Table;
++
++/** One short code and the long URL it points to. Maps to the url_mapping table. */
++@Entity
++@Table(name = "url_mapping")
++public class UrlMapping {
++
++    @Id
++    @GeneratedValue(strategy = GenerationType.IDENTITY)
++    private Long id;
++
++    @Column(nullable = false, unique = true, length = 10)
++    private String code;
++
++    @Column(name = "original_url", nullable = false, length = 2048)
++    private String originalUrl;
++
++    @Column(name = "created_at", nullable = false)
++    private Instant createdAt;
++
++    @Column(name = "click_count", nullable = false)
++    private long clickCount;
++
++    @Column(name = "last_accessed_at")
++    private Instant lastAccessedAt;
++
++    protected UrlMapping() {
++        // required by JPA
++    }
++
++    public UrlMapping(String code, String originalUrl, Instant createdAt) {
++        this.code = code;
++        this.originalUrl = originalUrl;
++        this.createdAt = createdAt;
++    }
++
++    public Long getId() {
++        return id;
++    }
++
++    public String getCode() {
++        return code;
++    }
++
++    public String getOriginalUrl() {
++        return originalUrl;
++    }
++
++    public Instant getCreatedAt() {
++        return createdAt;
++    }
++
++    public long getClickCount() {
++        return clickCount;
++    }
++
++    public Instant getLastAccessedAt() {
++        return lastAccessedAt;
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/domain/UrlMappingRepository.java b/shortener/src/main/java/com/agentic/shortener/domain/UrlMappingRepository.java
+new file mode 100644
+index 0000000..4e58fe8
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/domain/UrlMappingRepository.java
+@@ -0,0 +1,24 @@
++package com.agentic.shortener.domain;
++
++import java.time.Instant;
++import java.util.Optional;
++
++import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.data.jpa.repository.Modifying;
++import org.springframework.data.jpa.repository.Query;
++import org.springframework.data.repository.query.Param;
++
++public interface UrlMappingRepository extends JpaRepository<UrlMapping, Long> {
++
++    Optional<UrlMapping> findByCode(String code);
++
++    boolean existsByCode(String code);
++
++    /**
++     * Counts a click in a single UPDATE, so two redirects at the same moment
++     * cannot overwrite each other's count.
++     */
++    @Modifying
++    @Query("update UrlMapping u set u.clickCount = u.clickCount + 1, u.lastAccessedAt = :now where u.code = :code")
++    int recordClick(@Param("code") String code, @Param("now") Instant now);
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/ratelimit/RateLimitFilter.java b/shortener/src/main/java/com/agentic/shortener/ratelimit/RateLimitFilter.java
+new file mode 100644
+index 0000000..00382be
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/ratelimit/RateLimitFilter.java
+@@ -0,0 +1,49 @@
++package com.agentic.shortener.ratelimit;
++
++import java.io.IOException;
++import java.time.Clock;
++
++import org.springframework.http.HttpHeaders;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.MediaType;
++import org.springframework.stereotype.Component;
++import org.springframework.web.filter.OncePerRequestFilter;
++
++import com.agentic.shortener.config.ShortenerProperties;
++
++import jakarta.servlet.FilterChain;
++import jakarta.servlet.ServletException;
++import jakarta.servlet.http.HttpServletRequest;
++import jakarta.servlet.http.HttpServletResponse;
++
++/** Limits how often one client can create links. Redirects and stats are not limited. */
++@Component
++public class RateLimitFilter extends OncePerRequestFilter {
++
++    private final RateLimiter rateLimiter;
++
++    public RateLimitFilter(ShortenerProperties properties, Clock clock) {
++        this.rateLimiter = new RateLimiter(properties.rateLimit().requests(),
++                properties.rateLimit().window(), clock);
++    }
++
++    @Override
++    protected boolean shouldNotFilter(HttpServletRequest request) {
++        return !("POST".equals(request.getMethod()) && "/shorten".equals(request.getRequestURI()));
++    }
++
++    @Override
++    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
++                                    FilterChain chain) throws ServletException, IOException {
++        // Remote address, not X-Forwarded-For: that header is client-controlled unless a trusted proxy sets it.
++        if (rateLimiter.tryAcquire(request.getRemoteAddr())) {
++            chain.doFilter(request, response);
++            return;
++        }
++        response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
++        response.setHeader(HttpHeaders.RETRY_AFTER, String.valueOf(rateLimiter.windowSeconds()));
++        response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
++        response.getWriter().write("""
++                {"title":"Too Many Requests","status":429,"detail":"Rate limit exceeded. Try again later."}""");
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/ratelimit/RateLimiter.java b/shortener/src/main/java/com/agentic/shortener/ratelimit/RateLimiter.java
+new file mode 100644
+index 0000000..22262fc
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/ratelimit/RateLimiter.java
+@@ -0,0 +1,50 @@
++package com.agentic.shortener.ratelimit;
++
++import java.time.Clock;
++import java.time.Duration;
++import java.util.concurrent.ConcurrentHashMap;
++
++/**
++ * Fixed-window rate limiter: each key (client IP) gets {@code limit} requests per window.
++ * State is in memory, so it applies per application instance.
++ */
++public class RateLimiter {
++
++    private static final int CLEANUP_THRESHOLD = 10_000;
++
++    private final int limit;
++    private final long windowMillis;
++    private final Clock clock;
++    private final ConcurrentHashMap<String, Window> windows = new ConcurrentHashMap<>();
++
++    private record Window(long startMillis, int count) {
++    }
++
++    public RateLimiter(int limit, Duration window, Clock clock) {
++        this.limit = limit;
++        this.windowMillis = window.toMillis();
++        this.clock = clock;
++    }
++
++    /** Returns true if this request is within the limit for the key. */
++    public boolean tryAcquire(String key) {
++        long now = clock.millis();
++        if (windows.size() > CLEANUP_THRESHOLD) {
++            windows.values().removeIf(w -> isExpired(w, now));
++        }
++        // compute() is atomic per key, so concurrent requests from one client are counted correctly.
++        Window window = windows.compute(key, (k, current) ->
++                current == null || isExpired(current, now)
++                        ? new Window(now, 1)
++                        : new Window(current.startMillis(), current.count() + 1));
++        return window.count() <= limit;
++    }
++
++    public long windowSeconds() {
++        return Math.max(1, windowMillis / 1000);
++    }
++
++    private boolean isExpired(Window window, long now) {
++        return now - window.startMillis() >= windowMillis;
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/service/CodeGenerator.java b/shortener/src/main/java/com/agentic/shortener/service/CodeGenerator.java
+new file mode 100644
+index 0000000..cf4fd4f
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/service/CodeGenerator.java
+@@ -0,0 +1,24 @@
++package com.agentic.shortener.service;
++
++import java.security.SecureRandom;
++
++import org.springframework.stereotype.Component;
++
++/** Produces random 7-character codes from letters and digits (62^7, about 3.5 trillion values). */
++@Component
++public class CodeGenerator {
++
++    static final int LENGTH = 7;
++    private static final String ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
++
++    // SecureRandom so codes cannot be guessed from earlier ones.
++    private final SecureRandom random = new SecureRandom();
++
++    public String next() {
++        StringBuilder code = new StringBuilder(LENGTH);
++        for (int i = 0; i < LENGTH; i++) {
++            code.append(ALPHABET.charAt(random.nextInt(ALPHABET.length())));
++        }
++        return code.toString();
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/service/CodeNotFoundException.java b/shortener/src/main/java/com/agentic/shortener/service/CodeNotFoundException.java
+new file mode 100644
+index 0000000..fa7a668
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/service/CodeNotFoundException.java
+@@ -0,0 +1,8 @@
++package com.agentic.shortener.service;
++
++public class CodeNotFoundException extends RuntimeException {
++
++    public CodeNotFoundException(String code) {
++        super("No short link found for code '" + code + "'");
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/service/InvalidUrlException.java b/shortener/src/main/java/com/agentic/shortener/service/InvalidUrlException.java
+new file mode 100644
+index 0000000..5b3234d
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/service/InvalidUrlException.java
+@@ -0,0 +1,8 @@
++package com.agentic.shortener.service;
++
++public class InvalidUrlException extends RuntimeException {
++
++    public InvalidUrlException(String message) {
++        super(message);
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/service/UrlService.java b/shortener/src/main/java/com/agentic/shortener/service/UrlService.java
+new file mode 100644
+index 0000000..4150d91
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/service/UrlService.java
+@@ -0,0 +1,63 @@
++package com.agentic.shortener.service;
++
++import java.time.Clock;
++
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
++
++import com.agentic.shortener.domain.UrlMapping;
++import com.agentic.shortener.domain.UrlMappingRepository;
++
++/** The business rules: create a short link, resolve it for a redirect, report its stats. */
++@Service
++public class UrlService {
++
++    static final int MAX_CODE_ATTEMPTS = 5;
++
++    private final UrlMappingRepository repository;
++    private final UrlValidator validator;
++    private final CodeGenerator codeGenerator;
++    private final Clock clock;
++
++    public UrlService(UrlMappingRepository repository, UrlValidator validator,
++                      CodeGenerator codeGenerator, Clock clock) {
++        this.repository = repository;
++        this.validator = validator;
++        this.codeGenerator = codeGenerator;
++        this.clock = clock;
++    }
++
++    @Transactional
++    public UrlMapping shorten(String url) {
++        String validUrl = validator.validate(url);
++        return repository.save(new UrlMapping(newUniqueCode(), validUrl, clock.instant()));
++    }
++
++    /** Returns the long URL for a code and counts the visit. */
++    @Transactional
++    public String resolve(String code) {
++        UrlMapping mapping = find(code);
++        repository.recordClick(code, clock.instant());
++        return mapping.getOriginalUrl();
++    }
++
++    @Transactional(readOnly = true)
++    public UrlMapping stats(String code) {
++        return find(code);
++    }
++
++    private UrlMapping find(String code) {
++        return repository.findByCode(code).orElseThrow(() -> new CodeNotFoundException(code));
++    }
++
++    // A random code can collide with an existing one; retry a bounded number of times.
++    private String newUniqueCode() {
++        for (int attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
++            String code = codeGenerator.next();
++            if (!repository.existsByCode(code)) {
++                return code;
++            }
++        }
++        throw new IllegalStateException("Could not generate a unique code after " + MAX_CODE_ATTEMPTS + " attempts");
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/service/UrlValidator.java b/shortener/src/main/java/com/agentic/shortener/service/UrlValidator.java
+new file mode 100644
+index 0000000..e43a2d2
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/service/UrlValidator.java
+@@ -0,0 +1,39 @@
++package com.agentic.shortener.service;
++
++import java.net.URI;
++import java.net.URISyntaxException;
++
++import org.springframework.stereotype.Component;
++
++/** Decides whether a submitted URL is acceptable to shorten. */
++@Component
++public class UrlValidator {
++
++    static final int MAX_LENGTH = 2048;
++
++    /** Returns the trimmed URL, or throws {@link InvalidUrlException} saying what is wrong. */
++    public String validate(String url) {
++        if (url == null || url.isBlank()) {
++            throw new InvalidUrlException("url is required");
++        }
++        String trimmed = url.trim();
++        if (trimmed.length() > MAX_LENGTH) {
++            throw new InvalidUrlException("url must be at most " + MAX_LENGTH + " characters");
++        }
++        URI uri;
++        try {
++            uri = new URI(trimmed);
++        } catch (URISyntaxException e) {
++            throw new InvalidUrlException("url is not a valid URL");
++        }
++        // Only web links: blocks javascript:, file:, data: and similar schemes.
++        String scheme = uri.getScheme();
++        if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
++            throw new InvalidUrlException("url must start with http:// or https://");
++        }
++        if (uri.getHost() == null || uri.getHost().isBlank()) {
++            throw new InvalidUrlException("url must contain a host");
++        }
++        return trimmed;
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java b/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java
+new file mode 100644
+index 0000000..01f6a6b
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/web/ApiExceptionHandler.java
+@@ -0,0 +1,31 @@
++package com.agentic.shortener.web;
++
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ProblemDetail;
++import org.springframework.http.converter.HttpMessageNotReadableException;
++import org.springframework.web.bind.annotation.ExceptionHandler;
++import org.springframework.web.bind.annotation.RestControllerAdvice;
++
++import com.agentic.shortener.service.CodeNotFoundException;
++import com.agentic.shortener.service.InvalidUrlException;
++
++/** Turns exceptions into consistent JSON error bodies (RFC 9457 problem details). */
++@RestControllerAdvice
++public class ApiExceptionHandler {
++
++    @ExceptionHandler(InvalidUrlException.class)
++    ProblemDetail invalidUrl(InvalidUrlException e) {
++        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
++    }
++
++    @ExceptionHandler(HttpMessageNotReadableException.class)
++    ProblemDetail unreadableBody(HttpMessageNotReadableException e) {
++        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
++                "Request body must be JSON like {\"url\": \"https://example.com\"}");
++    }
++
++    @ExceptionHandler(CodeNotFoundException.class)
++    ProblemDetail notFound(CodeNotFoundException e) {
++        return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/web/UrlController.java b/shortener/src/main/java/com/agentic/shortener/web/UrlController.java
+new file mode 100644
+index 0000000..b355899
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/web/UrlController.java
+@@ -0,0 +1,82 @@
++package com.agentic.shortener.web;
++
++import java.net.URI;
++
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ProblemDetail;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RestController;
++
++import com.agentic.shortener.config.ShortenerProperties;
++import com.agentic.shortener.domain.UrlMapping;
++import com.agentic.shortener.service.UrlService;
++import com.agentic.shortener.web.dto.ShortenRequest;
++import com.agentic.shortener.web.dto.ShortenResponse;
++import com.agentic.shortener.web.dto.StatsResponse;
++
++import io.swagger.v3.oas.annotations.Operation;
++import io.swagger.v3.oas.annotations.Parameter;
++import io.swagger.v3.oas.annotations.headers.Header;
++import io.swagger.v3.oas.annotations.media.Content;
++import io.swagger.v3.oas.annotations.media.Schema;
++import io.swagger.v3.oas.annotations.responses.ApiResponse;
++import io.swagger.v3.oas.annotations.tags.Tag;
++
++@RestController
++@Tag(name = "Short links")
++public class UrlController {
++
++    // Codes are letters and digits only, so /{code} never swallows other paths.
++    private static final String CODE = "{code:[A-Za-z0-9]{4,10}}";
++
++    private final UrlService urlService;
++    private final ShortenerProperties properties;
++
++    public UrlController(UrlService urlService, ShortenerProperties properties) {
++        this.urlService = urlService;
++        this.properties = properties;
++    }
++
++    @PostMapping("/shorten")
++    @Operation(summary = "Create a short link")
++    @ApiResponse(responseCode = "201", description = "Link created; Location holds the short URL")
++    @ApiResponse(responseCode = "400", description = "Missing, malformed or non-http(s) URL",
++            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
++    @ApiResponse(responseCode = "429", description = "Too many links created from this IP; see Retry-After",
++            headers = @Header(name = "Retry-After", description = "Seconds to wait"),
++            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
++    public ResponseEntity<ShortenResponse> shorten(@RequestBody ShortenRequest request) {
++        UrlMapping mapping = urlService.shorten(request.url());
++        String shortUrl = properties.baseUrl() + "/" + mapping.getCode();
++        return ResponseEntity.created(URI.create(shortUrl))
++                .body(new ShortenResponse(mapping.getCode(), shortUrl, mapping.getOriginalUrl()));
++    }
++
++    // 302 (temporary) rather than 301: browsers cache 301s, which would hide later clicks from the stats.
++    @GetMapping("/" + CODE)
++    @Operation(summary = "Follow a short link", description = "Redirects to the original URL and counts the click.")
++    @ApiResponse(responseCode = "302", description = "Redirect to the original URL",
++            headers = @Header(name = "Location", description = "The original URL"))
++    @ApiResponse(responseCode = "404", description = "Unknown code",
++            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
++    public ResponseEntity<Void> redirect(@Parameter(example = "Ab3dE9x") @PathVariable String code) {
++        return ResponseEntity.status(HttpStatus.FOUND)
++                .location(URI.create(urlService.resolve(code)))
++                .build();
++    }
++
++    @GetMapping("/stats/" + CODE)
++    @Operation(summary = "Click statistics for a short link")
++    @ApiResponse(responseCode = "200", description = "Statistics")
++    @ApiResponse(responseCode = "404", description = "Unknown code",
++            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
++    public StatsResponse stats(@Parameter(example = "Ab3dE9x") @PathVariable String code) {
++        UrlMapping mapping = urlService.stats(code);
++        return new StatsResponse(mapping.getCode(), mapping.getOriginalUrl(), mapping.getClickCount(),
++                mapping.getCreatedAt(), mapping.getLastAccessedAt());
++    }
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/web/dto/ShortenRequest.java b/shortener/src/main/java/com/agentic/shortener/web/dto/ShortenRequest.java
+new file mode 100644
+index 0000000..baa937c
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/web/dto/ShortenRequest.java
+@@ -0,0 +1,9 @@
++package com.agentic.shortener.web.dto;
++
++import io.swagger.v3.oas.annotations.media.Schema;
++
++public record ShortenRequest(
++        @Schema(description = "The http(s) URL to shorten, at most 2048 characters",
++                example = "https://example.com/some/long/path", requiredMode = Schema.RequiredMode.REQUIRED)
++        String url) {
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/web/dto/ShortenResponse.java b/shortener/src/main/java/com/agentic/shortener/web/dto/ShortenResponse.java
+new file mode 100644
+index 0000000..398e486
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/web/dto/ShortenResponse.java
+@@ -0,0 +1,9 @@
++package com.agentic.shortener.web.dto;
++
++import io.swagger.v3.oas.annotations.media.Schema;
++
++public record ShortenResponse(
++        @Schema(example = "Ab3dE9x") String code,
++        @Schema(example = "http://localhost:8080/Ab3dE9x") String shortUrl,
++        @Schema(example = "https://example.com/some/long/path") String originalUrl) {
++}
+diff --git a/shortener/src/main/java/com/agentic/shortener/web/dto/StatsResponse.java b/shortener/src/main/java/com/agentic/shortener/web/dto/StatsResponse.java
+new file mode 100644
+index 0000000..dcc6a14
+--- /dev/null
++++ b/shortener/src/main/java/com/agentic/shortener/web/dto/StatsResponse.java
+@@ -0,0 +1,13 @@
++package com.agentic.shortener.web.dto;
++
++import java.time.Instant;
++
++import io.swagger.v3.oas.annotations.media.Schema;
++
++public record StatsResponse(
++        @Schema(example = "Ab3dE9x") String code,
++        @Schema(example = "https://example.com/some/long/path") String originalUrl,
++        @Schema(description = "Number of redirects served", example = "3") long clickCount,
++        Instant createdAt,
++        @Schema(description = "Time of the last redirect; null if never visited") Instant lastAccessedAt) {
++}
+diff --git a/shortener/src/main/resources/application.properties b/shortener/src/main/resources/application.properties
+new file mode 100644
+index 0000000..fc442e7
+--- /dev/null
++++ b/shortener/src/main/resources/application.properties
+@@ -0,0 +1,20 @@
++spring.application.name=shortener
++server.port=8080
++
++# In-memory H2. The schema is owned by schema.sql, not generated by Hibernate,
++# so every schema change is an explicit, reviewable file change.
++spring.datasource.url=jdbc:h2:mem:shortener;DB_CLOSE_DELAY=-1
++spring.datasource.username=sa
++spring.datasource.password=
++spring.sql.init.mode=always
++spring.jpa.hibernate.ddl-auto=validate
++spring.jpa.open-in-view=false
++
++# Health check only; nothing else is exposed.
++management.endpoints.web.exposure.include=health
++
++# Public address used to build the short link returned to the caller.
++shortener.base-url=http://localhost:8080
++# POST /shorten requests allowed per client IP per window.
++shortener.rate-limit.requests=20
++shortener.rate-limit.window=1m
+diff --git a/shortener/src/main/resources/schema.sql b/shortener/src/main/resources/schema.sql
+new file mode 100644
+index 0000000..9583254
+--- /dev/null
++++ b/shortener/src/main/resources/schema.sql
+@@ -0,0 +1,9 @@
++CREATE TABLE IF NOT EXISTS url_mapping (
++    id               BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
++    code             VARCHAR(10)   NOT NULL,
++    original_url     VARCHAR(2048) NOT NULL,
++    created_at       TIMESTAMP(6) WITH TIME ZONE NOT NULL,
++    click_count      BIGINT        NOT NULL DEFAULT 0,
++    last_accessed_at TIMESTAMP(6) WITH TIME ZONE,
++    CONSTRAINT uk_url_mapping_code UNIQUE (code)
++);
+diff --git a/shortener/src/test/java/com/agentic/shortener/RateLimitIntegrationTest.java b/shortener/src/test/java/com/agentic/shortener/RateLimitIntegrationTest.java
+new file mode 100644
+index 0000000..3d52c48
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/RateLimitIntegrationTest.java
+@@ -0,0 +1,39 @@
++package com.agentic.shortener;
++
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
++import org.springframework.http.MediaType;
++import org.springframework.test.web.servlet.MockMvc;
++
++@SpringBootTest(properties = "shortener.rate-limit.requests=2")
++@AutoConfigureMockMvc
++class RateLimitIntegrationTest {
++
++    @Autowired
++    private MockMvc mockMvc;
++
++    @Test
++    void thirdShortenRequestInTheWindowGets429ButReadsStillWork() throws Exception {
++        for (int i = 0; i < 2; i++) {
++            mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
++                            .content("{\"url\": \"https://example.com\"}"))
++                    .andExpect(status().isCreated());
++        }
++
++        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
++                        .content("{\"url\": \"https://example.com\"}"))
++                .andExpect(status().isTooManyRequests())
++                .andExpect(header().string("Retry-After", "60"))
++                .andExpect(jsonPath("$.status").value(429));
++
++        mockMvc.perform(get("/actuator/health")).andExpect(status().isOk());
++    }
++}
+diff --git a/shortener/src/test/java/com/agentic/shortener/ShortenerIntegrationTest.java b/shortener/src/test/java/com/agentic/shortener/ShortenerIntegrationTest.java
+new file mode 100644
+index 0000000..e4581f2
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/ShortenerIntegrationTest.java
+@@ -0,0 +1,111 @@
++package com.agentic.shortener;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
++import org.springframework.http.MediaType;
++import org.springframework.test.web.servlet.MockMvc;
++
++import com.jayway.jsonpath.JsonPath;
++
++/** Starts the whole application with a real H2 database and calls it over HTTP. */
++@SpringBootTest(properties = "shortener.rate-limit.requests=1000")
++@AutoConfigureMockMvc
++class ShortenerIntegrationTest {
++
++    @Autowired
++    private MockMvc mockMvc;
++
++    @Test
++    void shortenThenRedirectThenStats() throws Exception {
++        String code = shorten("https://example.com/some/long/path");
++
++        mockMvc.perform(get("/" + code))
++                .andExpect(status().isFound())
++                .andExpect(header().string("Location", "https://example.com/some/long/path"));
++        mockMvc.perform(get("/" + code)).andExpect(status().isFound());
++
++        mockMvc.perform(get("/stats/" + code))
++                .andExpect(status().isOk())
++                .andExpect(jsonPath("$.code").value(code))
++                .andExpect(jsonPath("$.originalUrl").value("https://example.com/some/long/path"))
++                .andExpect(jsonPath("$.clickCount").value(2))
++                .andExpect(jsonPath("$.createdAt").isNotEmpty())
++                .andExpect(jsonPath("$.lastAccessedAt").isNotEmpty());
++    }
++
++    @Test
++    void shortenReturnsTheShortUrlAndLocationHeader() throws Exception {
++        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
++                        .content("{\"url\": \"https://example.com\"}"))
++                .andExpect(status().isCreated())
++                .andExpect(jsonPath("$.shortUrl").value(org.hamcrest.Matchers.startsWith("http://localhost:8080/")))
++                .andExpect(header().exists("Location"));
++    }
++
++    @Test
++    void newLinkStartsWithZeroClicks() throws Exception {
++        String code = shorten("https://example.com");
++
++        mockMvc.perform(get("/stats/" + code))
++                .andExpect(jsonPath("$.clickCount").value(0))
++                .andExpect(jsonPath("$.lastAccessedAt").isEmpty());
++    }
++
++    @Test
++    void invalidUrlIsRejectedWith400() throws Exception {
++        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
++                        .content("{\"url\": \"javascript:alert(1)\"}"))
++                .andExpect(status().isBadRequest())
++                .andExpect(jsonPath("$.detail").value("url must start with http:// or https://"));
++    }
++
++    @Test
++    void missingOrMalformedBodyIsRejectedWith400() throws Exception {
++        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON).content("{}"))
++                .andExpect(status().isBadRequest());
++        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON).content("not json"))
++                .andExpect(status().isBadRequest());
++    }
++
++    @Test
++    void unknownCodeReturns404ForRedirectAndStats() throws Exception {
++        mockMvc.perform(get("/nosuch1")).andExpect(status().isNotFound());
++        mockMvc.perform(get("/stats/nosuch1")).andExpect(status().isNotFound());
++    }
++
++    @Test
++    void healthEndpointReportsUp() throws Exception {
++        mockMvc.perform(get("/actuator/health"))
++                .andExpect(status().isOk())
++                .andExpect(jsonPath("$.status").value("UP"));
++    }
++
++    @Test
++    void openApiSpecDescribesAllThreeEndpoints() throws Exception {
++        mockMvc.perform(get("/v3/api-docs"))
++                .andExpect(status().isOk())
++                .andExpect(jsonPath("$.info.title").value("URL Shortener API"))
++                .andExpect(jsonPath("$.paths['/shorten'].post").exists())
++                .andExpect(jsonPath("$.paths['/{code}'].get").exists())
++                .andExpect(jsonPath("$.paths['/stats/{code}'].get").exists());
++    }
++
++    private String shorten(String url) throws Exception {
++        String body = mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
++                        .content("{\"url\": \"" + url + "\"}"))
++                .andExpect(status().isCreated())
++                .andReturn().getResponse().getContentAsString();
++        String code = JsonPath.read(body, "$.code");
++        assertThat(code).hasSize(7);
++        return code;
++    }
++}
+diff --git a/shortener/src/test/java/com/agentic/shortener/ratelimit/RateLimiterTest.java b/shortener/src/test/java/com/agentic/shortener/ratelimit/RateLimiterTest.java
+new file mode 100644
+index 0000000..4ef67f1
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/ratelimit/RateLimiterTest.java
+@@ -0,0 +1,69 @@
++package com.agentic.shortener.ratelimit;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.time.Clock;
++import java.time.Duration;
++import java.time.Instant;
++import java.time.ZoneId;
++import java.time.ZoneOffset;
++
++import org.junit.jupiter.api.Test;
++
++class RateLimiterTest {
++
++    private final MutableClock clock = new MutableClock();
++    private final RateLimiter limiter = new RateLimiter(2, Duration.ofMinutes(1), clock);
++
++    @Test
++    void allowsRequestsUpToTheLimitThenBlocks() {
++        assertThat(limiter.tryAcquire("client-a")).isTrue();
++        assertThat(limiter.tryAcquire("client-a")).isTrue();
++        assertThat(limiter.tryAcquire("client-a")).isFalse();
++    }
++
++    @Test
++    void countsEachClientSeparately() {
++        limiter.tryAcquire("client-a");
++        limiter.tryAcquire("client-a");
++
++        assertThat(limiter.tryAcquire("client-a")).isFalse();
++        assertThat(limiter.tryAcquire("client-b")).isTrue();
++    }
++
++    @Test
++    void allowsRequestsAgainOnceTheWindowHasPassed() {
++        limiter.tryAcquire("client-a");
++        limiter.tryAcquire("client-a");
++        assertThat(limiter.tryAcquire("client-a")).isFalse();
++
++        clock.advance(Duration.ofMinutes(1));
++
++        assertThat(limiter.tryAcquire("client-a")).isTrue();
++    }
++
++    /** A clock the test can move forward by hand. */
++    private static final class MutableClock extends Clock {
++
++        private Instant now = Instant.parse("2026-10-14T10:00:00Z");
++
++        void advance(Duration duration) {
++            now = now.plus(duration);
++        }
++
++        @Override
++        public Instant instant() {
++            return now;
++        }
++
++        @Override
++        public ZoneId getZone() {
++            return ZoneOffset.UTC;
++        }
++
++        @Override
++        public Clock withZone(ZoneId zone) {
++            return this;
++        }
++    }
++}
+diff --git a/shortener/src/test/java/com/agentic/shortener/service/CodeGeneratorTest.java b/shortener/src/test/java/com/agentic/shortener/service/CodeGeneratorTest.java
+new file mode 100644
+index 0000000..152aea5
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/service/CodeGeneratorTest.java
+@@ -0,0 +1,29 @@
++package com.agentic.shortener.service;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.util.HashSet;
++import java.util.Set;
++
++import org.junit.jupiter.api.Test;
++
++class CodeGeneratorTest {
++
++    private final CodeGenerator generator = new CodeGenerator();
++
++    @Test
++    void codesHaveTheExpectedLengthAndCharacters() {
++        for (int i = 0; i < 100; i++) {
++            assertThat(generator.next()).matches("[0-9A-Za-z]{" + CodeGenerator.LENGTH + "}");
++        }
++    }
++
++    @Test
++    void codesDoNotRepeatInASmallSample() {
++        Set<String> codes = new HashSet<>();
++        for (int i = 0; i < 1_000; i++) {
++            codes.add(generator.next());
++        }
++        assertThat(codes).hasSize(1_000);
++    }
++}
+diff --git a/shortener/src/test/java/com/agentic/shortener/service/UrlServiceTest.java b/shortener/src/test/java/com/agentic/shortener/service/UrlServiceTest.java
+new file mode 100644
+index 0000000..2aaaf38
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/service/UrlServiceTest.java
+@@ -0,0 +1,90 @@
++package com.agentic.shortener.service;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import java.time.Clock;
++import java.time.Instant;
++import java.time.ZoneOffset;
++import java.util.Optional;
++
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++
++import com.agentic.shortener.domain.UrlMapping;
++import com.agentic.shortener.domain.UrlMappingRepository;
++
++class UrlServiceTest {
++
++    private static final Instant NOW = Instant.parse("2026-10-14T10:00:00Z");
++
++    private final UrlMappingRepository repository = mock(UrlMappingRepository.class);
++    private final CodeGenerator codeGenerator = mock(CodeGenerator.class);
++    private UrlService service;
++
++    @BeforeEach
++    void setUp() {
++        service = new UrlService(repository, new UrlValidator(), codeGenerator,
++                Clock.fixed(NOW, ZoneOffset.UTC));
++        when(repository.save(any(UrlMapping.class))).thenAnswer(call -> call.getArgument(0));
++    }
++
++    @Test
++    void shortenSavesAMappingWithAGeneratedCode() {
++        when(codeGenerator.next()).thenReturn("abc1234");
++
++        UrlMapping saved = service.shorten("https://example.com");
++
++        assertThat(saved.getCode()).isEqualTo("abc1234");
++        assertThat(saved.getOriginalUrl()).isEqualTo("https://example.com");
++        assertThat(saved.getCreatedAt()).isEqualTo(NOW);
++    }
++
++    @Test
++    void shortenRetriesWhenTheCodeIsAlreadyTaken() {
++        when(codeGenerator.next()).thenReturn("taken01", "free002");
++        when(repository.existsByCode("taken01")).thenReturn(true);
++
++        assertThat(service.shorten("https://example.com").getCode()).isEqualTo("free002");
++    }
++
++    @Test
++    void shortenGivesUpAfterTheMaximumNumberOfCollisions() {
++        when(codeGenerator.next()).thenReturn("taken01");
++        when(repository.existsByCode("taken01")).thenReturn(true);
++
++        assertThatThrownBy(() -> service.shorten("https://example.com"))
++                .isInstanceOf(IllegalStateException.class);
++        verify(codeGenerator, times(UrlService.MAX_CODE_ATTEMPTS)).next();
++        verify(repository, never()).save(any());
++    }
++
++    @Test
++    void shortenRejectsAnInvalidUrlWithoutSaving() {
++        assertThatThrownBy(() -> service.shorten("not-a-url")).isInstanceOf(InvalidUrlException.class);
++        verify(repository, never()).save(any());
++    }
++
++    @Test
++    void resolveReturnsTheUrlAndRecordsTheClick() {
++        when(repository.findByCode("abc1234"))
++                .thenReturn(Optional.of(new UrlMapping("abc1234", "https://example.com", NOW)));
++
++        assertThat(service.resolve("abc1234")).isEqualTo("https://example.com");
++        verify(repository).recordClick("abc1234", NOW);
++    }
++
++    @Test
++    void resolveThrowsForAnUnknownCode() {
++        when(repository.findByCode("missing")).thenReturn(Optional.empty());
++
++        assertThatThrownBy(() -> service.resolve("missing")).isInstanceOf(CodeNotFoundException.class);
++        verify(repository, never()).recordClick(any(), any());
++    }
++}
+diff --git a/shortener/src/test/java/com/agentic/shortener/service/UrlValidatorTest.java b/shortener/src/test/java/com/agentic/shortener/service/UrlValidatorTest.java
+new file mode 100644
+index 0000000..76266b1
+--- /dev/null
++++ b/shortener/src/test/java/com/agentic/shortener/service/UrlValidatorTest.java
+@@ -0,0 +1,56 @@
++package com.agentic.shortener.service;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.NullAndEmptySource;
++import org.junit.jupiter.params.provider.ValueSource;
++
++class UrlValidatorTest {
++
++    private final UrlValidator validator = new UrlValidator();
++
++    @ParameterizedTest
++    @ValueSource(strings = {"https://example.com", "http://example.com/a/b?c=d#e", "HTTPS://EXAMPLE.COM"})
++    void acceptsHttpAndHttpsUrls(String url) {
++        assertThat(validator.validate(url)).isEqualTo(url);
++    }
++
++    @Test
++    void trimsSurroundingWhitespace() {
++        assertThat(validator.validate("  https://example.com  ")).isEqualTo("https://example.com");
++    }
++
++    @ParameterizedTest
++    @NullAndEmptySource
++    @ValueSource(strings = {"   "})
++    void rejectsMissingUrl(String url) {
++        assertThatThrownBy(() -> validator.validate(url))
++                .isInstanceOf(InvalidUrlException.class)
++                .hasMessage("url is required");
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"javascript:alert(1)", "file:///etc/passwd", "ftp://example.com", "example.com"})
++    void rejectsNonWebSchemes(String url) {
++        assertThatThrownBy(() -> validator.validate(url))
++                .isInstanceOf(InvalidUrlException.class)
++                .hasMessageContaining("http:// or https://");
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"https://", "http:///path", "https://exa mple.com"})
++    void rejectsMalformedUrls(String url) {
++        assertThatThrownBy(() -> validator.validate(url)).isInstanceOf(InvalidUrlException.class);
++    }
++
++    @Test
++    void rejectsUrlsLongerThanTheLimit() {
++        String tooLong = "https://example.com/" + "a".repeat(UrlValidator.MAX_LENGTH);
++        assertThatThrownBy(() -> validator.validate(tooLong))
++                .isInstanceOf(InvalidUrlException.class)
++                .hasMessageContaining("at most");
++    }
++}

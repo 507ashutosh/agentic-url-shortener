@@ -1,0 +1,29 @@
+# plan
+
+**Summary:** 11 tasks; data model and service rules first, then web layer, tests and docs in parallel, then validation
+
+## Decisions and assumptions
+
+- **DECISION:** Build in layers (domain, service, web, cross-cutting) — because each layer can be tested on its own and the web layer stays thin _(based on: requirements)_
+
+## Report
+
+## Tasks
+
+| Id | Task | Stage | Depends on |
+|----|------|-------|------------|
+| T1 | API contract for the three endpoints and the error format | design | - |
+| T2 | Schema for the `url_mapping` table | design | - |
+| T3 | Entity and repository, including an atomic click counter | implement | T2 |
+| T4 | URL validation rules | implement | T1 |
+| T5 | Unguessable code generation with collision retry | implement | T1 |
+| T6 | Service: shorten, resolve (counting clicks), stats | implement | T3, T4, T5 |
+| T7 | Controller, DTOs, error mapping, OpenAPI description | implement | T1, T6 |
+| T8 | Per-IP rate limit on link creation | implement | T1 |
+| T9 | Unit tests (validator, generator, service, rate limiter) and integration tests (HTTP flow, errors, 429, health, OpenAPI) | tests | T1 |
+| T10 | API guide with curl examples | docs | T1 |
+| T11 | Build, run all tests, produce the change set | validate, release | T3-T10 |
+
+## Parallelism
+
+After design, implementation (T3-T8), tests (T9) and docs (T10) are independent and run at the same time.

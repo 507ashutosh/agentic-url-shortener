@@ -118,7 +118,7 @@ public final class OrchestratorApp {
         SdlcPipeline sdlc = SdlcPipelineFactory.create(llm, context, checkpoints, approvals);
         audit.record("run.configured", null, AuditSink.data("scenario", scenario.name(),
                 "requirement", scenario.requirement(), "agents", model.describe(),
-                "approvals", autoApprove ? "automatic" : "interactive", "approver", approver,
+                "approvals", autoApprove ? "automatic" : "interactive", "approver", autoApprove ? null : approver,
                 "faults", faults.stream().map(Fault::toString).toList()));
         DagExecutor executor = new DagExecutor(new CompositeRunListener(console, audit));
         RunReport report = executor.run(sdlc.pipeline());
