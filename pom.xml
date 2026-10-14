@@ -20,6 +20,7 @@
 
     <modules>
         <module>shortener</module>
+        <module>orchestrator</module>
     </modules>
 
     <properties>
