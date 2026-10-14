@@ -7,9 +7,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 import com.agentic.orchestrator.console.ConsoleRunListener;
+import com.agentic.orchestrator.engine.CompositeRunListener;
 import com.agentic.orchestrator.engine.DagExecutor;
 import com.agentic.orchestrator.engine.RunReport;
 import com.agentic.orchestrator.governance.approval.ApprovalGateway;
@@ -21,6 +23,10 @@ import com.agentic.orchestrator.llm.FaultInjectingLlmClient;
 import com.agentic.orchestrator.llm.FaultInjectingLlmClient.Fault;
 import com.agentic.orchestrator.llm.LlmClient;
 import com.agentic.orchestrator.llm.ScriptedLlmClient;
+import com.agentic.orchestrator.observability.AuditLog;
+import com.agentic.orchestrator.observability.AuditSink;
+import com.agentic.orchestrator.observability.MetricsReport;
+import com.agentic.orchestrator.observability.RunMetrics;
 import com.agentic.orchestrator.pipeline.SdlcPipelineFactory;
 import com.agentic.orchestrator.pipeline.SdlcPipelineFactory.SdlcPipeline;
 import com.agentic.orchestrator.run.Decision;
@@ -40,6 +46,9 @@ import com.agentic.orchestrator.scenario.ScenarioLoader;
  *     --auto-approve              approve every checkpoint automatically (unattended runs)
  *     --approver &lt;name&gt;           name recorded on approvals (default: your OS user)
  *     --inject-fault &lt;stage:kind&gt;  error | outage | secret | broken-code (repeatable)
+ *
+ * java -jar orchestrator/target/orchestrator.jar --metrics          reliability metrics across all runs
+ * java -jar orchestrator/target/orchestrator.jar --verify-audit &lt;audit.jsonl&gt;   check the hash chain
  * </pre>
  */
 public final class OrchestratorApp {
@@ -63,6 +72,14 @@ public final class OrchestratorApp {
                 case "--auto-approve" -> autoApprove = true;
                 case "--approver" -> approver = valueAfter(args, i++);
                 case "--inject-fault" -> faults.add(Fault.parse(valueAfter(args, i++)));
+                case "--metrics" -> {
+                    MetricsReport.printAndSave(Path.of("runs").toAbsolutePath(), System.out);
+                    return;
+                }
+                case "--verify-audit" -> {
+                    verifyAudit(Path.of(valueAfter(args, i)));
+                    return;
+                }
                 default -> usage("Unknown argument: " + args[i]);
             }
         }
@@ -77,14 +94,18 @@ public final class OrchestratorApp {
         Scenario scenario = new ScenarioLoader(repo.resolve("scenarios")).load(scenarioName);
         RunWorkspace workspace = RunWorkspace.create(repo, scenario.name());
         WorkspaceCheckpoints checkpoints = WorkspaceCheckpoints.init(workspace.workspaceDir());
-        RunContext context = new RunContext(scenario, workspace);
+        AuditLog audit = new AuditLog(workspace.runDir().resolve("audit.jsonl"), workspace.runId());
+        RunContext context = new RunContext(scenario, workspace, audit);
 
         LlmClient model = live ? ClaudeLlmClient.fromEnv() : new ScriptedLlmClient(scenario.name());
         if (!faults.isEmpty()) {
             model = new FaultInjectingLlmClient(model, faults);
         }
         LlmClient llm = new FallbackLlmClient(model, new ScriptedLlmClient(scenario.name()),
-                FAILURES_BEFORE_FALLBACK, (agent, reason) -> console.note(agent, "fallback: " + reason));
+                FAILURES_BEFORE_FALLBACK, (agent, reason) -> {
+                    console.note(agent, "fallback: " + reason);
+                    audit.record("llm.fallback", agent, AuditSink.data("reason", reason));
+                });
         ApprovalGateway approvals = autoApprove
                 ? new AutoApprovalGateway()
                 : new ConsoleApprovalGateway(out, new BufferedReader(new InputStreamReader(System.in)), approver);
@@ -95,7 +116,11 @@ public final class OrchestratorApp {
                 repo.relativize(workspace.runDir()));
 
         SdlcPipeline sdlc = SdlcPipelineFactory.create(llm, context, checkpoints, approvals);
-        DagExecutor executor = new DagExecutor(console);
+        audit.record("run.configured", null, AuditSink.data("scenario", scenario.name(),
+                "requirement", scenario.requirement(), "agents", model.describe(),
+                "approvals", autoApprove ? "automatic" : "interactive", "approver", approver,
+                "faults", faults.stream().map(Fault::toString).toList()));
+        DagExecutor executor = new DagExecutor(new CompositeRunListener(console, audit));
         RunReport report = executor.run(sdlc.pipeline());
 
         // A reviewer sent a stage back: reset what it and its downstream stages wrote, then re-run only those.
@@ -111,9 +136,28 @@ public final class OrchestratorApp {
             report = executor.rerun(sdlc.pipeline(), report, stage);
         }
 
+        RunMetrics metrics = audit.complete(report, scenario.name(), model.describe());
+        MetricsReport.save(metrics, workspace.runDir());
+
         printGovernance(out, context);
-        out.printf("%nStage reports: %s%n", repo.relativize(workspace.artifactsDir()));
+        out.printf(Locale.ROOT, "%nTime: %.1fs total · %.1fs agents and tools · %.1fs waiting for approvals%n",
+                metrics.wallClockMs() / 1000.0, metrics.agentTimeMs() / 1000.0, metrics.humanWaitMs() / 1000.0);
+        out.printf("Stage reports: %s%n", repo.relativize(workspace.artifactsDir()));
+        out.printf("Audit log:     %s (%s)%n", repo.relativize(audit.file()),
+                AuditLog.verify(audit.file()) == -1 ? "hash chain verified" : "HASH CHAIN BROKEN");
+        out.printf("Run summary:   %s · all runs: --metrics%n",
+                repo.relativize(workspace.runDir().resolve(MetricsReport.SUMMARY_FILE)));
         System.exit(report.succeeded() ? 0 : 1);
+    }
+
+    private static void verifyAudit(Path file) {
+        long broken = AuditLog.verify(file);
+        if (broken == -1) {
+            System.out.println("OK: hash chain intact, no event was changed or removed · " + file);
+            return;
+        }
+        System.out.println("TAMPERED: hash chain breaks at event " + broken + " · " + file);
+        System.exit(1);
     }
 
     /** Decision lineage, approvals and policy findings: what was decided, by whom, and why. */
@@ -130,8 +174,9 @@ public final class OrchestratorApp {
         if (!context.approvals().isEmpty()) {
             out.println();
             out.println("Approvals:");
-            context.approvals().forEach(a -> out.printf("  [%s] %-28s %s by %s%s%n", a.request().stageId(),
-                    a.request().policyId(), a.decision().outcome(), a.decision().approver(),
+            context.approvals().forEach(a -> out.printf(Locale.ROOT, "  [%s] %-28s %s by %s after %.1fs%s%n",
+                    a.request().stageId(), a.request().policyId(), a.decision().outcome(), a.decision().approver(),
+                    a.waited().toMillis() / 1000.0,
                     a.decision().feedback() == null ? "" : " · \"" + a.decision().feedback() + "\""));
         }
         if (!context.policyFindings().isEmpty()) {
@@ -153,6 +198,8 @@ public final class OrchestratorApp {
         System.err.println(problem);
         System.err.println("Usage: java -jar orchestrator/target/orchestrator.jar [--scenario <name>] [--live]"
                 + " [--auto-approve] [--approver <name>] [--inject-fault <stage>:<error|outage|secret|broken-code>]");
+        System.err.println("       java -jar orchestrator/target/orchestrator.jar --metrics");
+        System.err.println("       java -jar orchestrator/target/orchestrator.jar --verify-audit <audit.jsonl>");
         System.exit(2);
     }
 }

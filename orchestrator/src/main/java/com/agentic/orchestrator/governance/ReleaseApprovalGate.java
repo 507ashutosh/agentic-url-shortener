@@ -41,8 +41,9 @@ public final class ReleaseApprovalGate implements Gate {
         ApprovalRequest request = new ApprovalRequest(stage.id(), POLICY_ID, "release this change set",
                 "validation: " + validation + "\n" + changes, revisableStages);
 
+        long asked = System.nanoTime();
         ApprovalDecision decision = approvals.request(request);
-        context.recordApproval(request, decision);
+        context.recordApproval(request, decision, java.time.Duration.ofNanos(System.nanoTime() - asked));
         return switch (decision.outcome()) {
             case APPROVED -> GateDecision.pass();
             case REJECTED -> GateDecision.stop("release rejected by " + decision.approver());

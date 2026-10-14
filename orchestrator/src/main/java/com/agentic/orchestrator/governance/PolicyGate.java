@@ -66,8 +66,9 @@ public final class PolicyGate implements Gate {
         for (PolicyFinding finding : findings) {
             ApprovalRequest request = new ApprovalRequest(stage.id(), finding.policyId(), finding.reason(),
                     finding.evidence(), List.of());
+            long asked = System.nanoTime();
             ApprovalDecision decision = approvals.request(request);
-            context.recordApproval(request, decision);
+            context.recordApproval(request, decision, java.time.Duration.ofNanos(System.nanoTime() - asked));
             if (decision.outcome() != ApprovalDecision.Outcome.APPROVED) {
                 return GateDecision.stop(finding.policyId() + " rejected by " + decision.approver());
             }

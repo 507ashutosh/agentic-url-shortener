@@ -2,6 +2,7 @@ package com.agentic.orchestrator.run;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -40,16 +41,32 @@ public final class RunWorkspace {
 
     /** Creates runs/&lt;run-id&gt;/ and copies the current shortener into its workspace. */
     public static RunWorkspace create(Path repoRoot, String scenarioName) {
-        String runId = "run-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
+        String baseId = "run-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
                 + "-" + scenarioName;
-        RunWorkspace ws = new RunWorkspace(runId, repoRoot, repoRoot.resolve("runs").resolve(runId));
+        RunWorkspace ws;
+        try {
+            Path runsDir = Files.createDirectories(repoRoot.resolve("runs"));
+            // Two runs started in the same second get -2, -3, ...; createDirectory is atomic, so no clash.
+            String runId = baseId;
+            for (int n = 2; ; n++) {
+                try {
+                    Files.createDirectory(runsDir.resolve(runId));
+                    break;
+                } catch (FileAlreadyExistsException e) {
+                    runId = baseId + "-" + n;
+                }
+            }
+            ws = new RunWorkspace(runId, repoRoot, runsDir.resolve(runId));
+        } catch (IOException e) {
+            throw new UncheckedIOException("Could not create a run folder for " + baseId, e);
+        }
         try {
             Files.createDirectories(ws.artifactsDir);
             for (String entry : BASELINE) {
                 copy(repoRoot.resolve(entry), ws.workspaceDir.resolve(entry));
             }
         } catch (IOException e) {
-            throw new UncheckedIOException("Could not create workspace for " + runId, e);
+            throw new UncheckedIOException("Could not create workspace for " + ws.runId, e);
         }
         return ws;
     }

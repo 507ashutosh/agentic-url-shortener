@@ -4,12 +4,15 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
+import java.util.List;
 
 /**
  * Asks the person at the terminal. While the question is open, other stages' output is held back
  * (both use the same PrintStream as a lock), so the prompt is never interleaved with progress lines.
  */
 public final class ConsoleApprovalGateway implements ApprovalGateway {
+
+    private static final int MAX_EVIDENCE_LINES = 60;
 
     private final PrintStream out;
     private final BufferedReader in;
@@ -26,7 +29,13 @@ public final class ConsoleApprovalGateway implements ApprovalGateway {
         synchronized (out) {
             out.printf("%n  ⏸ approval required · %s · %s%n", request.stageId(), request.title());
             out.printf("    policy: %s%n", request.policyId());
-            request.evidence().lines().limit(15).forEach(line -> out.println("      " + line));
+            // The reviewer must see the whole change set; only very long evidence is cut, and the cut is stated.
+            List<String> lines = request.evidence().lines().toList();
+            int shown = lines.size() <= MAX_EVIDENCE_LINES ? lines.size() : MAX_EVIDENCE_LINES - 1;
+            lines.subList(0, shown).forEach(line -> out.println("      " + line));
+            if (shown < lines.size()) {
+                out.printf("      … %d more lines (full detail in the stage report)%n", lines.size() - shown);
+            }
             boolean canRevise = !request.revisableStages().isEmpty();
             while (true) {
                 out.print(canRevise ? "    approve? [y]es / [n]o / [r]evise: " : "    approve? [y/n]: ");
