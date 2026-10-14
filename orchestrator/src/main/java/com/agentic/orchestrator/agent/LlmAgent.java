@@ -37,7 +37,7 @@ public abstract class LlmAgent implements Agent {
     }
 
     /** Workspace folders this agent may write to. Empty means it may not write files at all. */
-    protected List<String> writableFolders() {
+    public List<String> writableFolders() {
         return List.of();
     }
 
@@ -79,6 +79,12 @@ public abstract class LlmAgent implements Agent {
                     .append("# Output of the ").append(stage).append(" stage\n\n")
                     .append("Summary: ").append(a.summary()).append("\n\n")
                     .append(a.body()).append("\n\n"));
+        }
+        List<String> feedback = context.feedbackFor(id());
+        if (!feedback.isEmpty()) {
+            prompt.append("# Reviewer feedback on your previous output (you must address it)\n\n");
+            feedback.forEach(f -> prompt.append("- ").append(f).append("\n"));
+            prompt.append("\n");
         }
         if (readsCodebase()) {
             prompt.append("# Current codebase\n\n").append(context.workspace().codebaseSnapshot());

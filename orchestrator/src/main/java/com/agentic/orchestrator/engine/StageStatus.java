@@ -1,10 +1,12 @@
 package com.agentic.orchestrator.engine;
 
 public enum StageStatus {
-    /** The action ran and returned normally. */
+    /** The action ran and every exit gate accepted it. */
     SUCCEEDED,
-    /** The action threw an exception. */
+    /** Every attempt failed (exception or rejected output). */
     FAILED,
-    /** Not run, because a stage it depends on did not succeed. */
+    /** A gate stopped it, e.g. a human rejected an approval. */
+    BLOCKED,
+    /** Not run: a dependency did not succeed, or the run was safe-stopped first. */
     SKIPPED
 }

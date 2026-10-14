@@ -31,7 +31,7 @@ public final class DocsAgent extends LlmAgent {
     }
 
     @Override
-    protected List<String> writableFolders() {
+    public List<String> writableFolders() {
         return List.of("docs");
     }
 }

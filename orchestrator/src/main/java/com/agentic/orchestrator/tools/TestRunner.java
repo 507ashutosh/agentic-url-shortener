@@ -44,7 +44,8 @@ public final class TestRunner {
                 .map(TOTALS::matcher).filter(Matcher::find)
                 .reduce((first, second) -> second)   // the last match is the overall total
                 .map(m -> "%s tests run, %s failures, %s errors".formatted(m.group(1), m.group(2), m.group(3)))
-                .orElse("no test results found");
+                .orElse(output.stream().anyMatch(l -> l.contains("COMPILATION ERROR"))
+                        ? "compilation failed" : "no test results found");
 
         String logPath = context.workspace().runDir().relativize(log).toString();
         if (process.exitValue() != 0) {

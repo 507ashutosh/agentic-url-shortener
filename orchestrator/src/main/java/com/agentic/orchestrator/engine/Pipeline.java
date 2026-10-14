@@ -135,10 +135,14 @@ public final class Pipeline {
         }
 
         public Builder stage(String id, StageAction action, String... dependsOn) {
+            return stage(id, action, StageControls.defaults(), dependsOn);
+        }
+
+        public Builder stage(String id, StageAction action, StageControls controls, String... dependsOn) {
             if (stages.containsKey(id)) {
                 throw new PipelineValidationException("Duplicate stage '" + id + "'");
             }
-            stages.put(id, new Stage(id, Arrays.asList(dependsOn), action));
+            stages.put(id, new Stage(id, Arrays.asList(dependsOn), action, controls));
             return this;
         }
 

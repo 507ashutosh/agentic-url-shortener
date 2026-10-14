@@ -37,7 +37,7 @@ public final class ImplementAgent extends LlmAgent {
     }
 
     @Override
-    protected List<String> writableFolders() {
+    public List<String> writableFolders() {
         return List.of("shortener/src/main");
     }
 }

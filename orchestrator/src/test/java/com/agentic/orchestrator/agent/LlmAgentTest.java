@@ -82,7 +82,7 @@ class LlmAgentTest {
         }
 
         @Override
-        protected List<String> writableFolders() {
+        public List<String> writableFolders() {
             return List.of("shortener/src/main");
         }
     }
