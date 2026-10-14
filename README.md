@@ -47,6 +47,7 @@ Agents never touch the real code: each run works on a private copy in `runs/<run
 | `./run.sh up` | build and start the shortener in the background (API, Swagger UI, health on :8080) |
 | `./run.sh demo [options]` | run the orchestrator, e.g. `./run.sh demo --scenario greenfield --auto-approve` |
 | `./run.sh all [options]` | both of the above |
+| `./run.sh all-scenarios [options]` | guided tour of greenfield → brownfield → ambiguous: a banner explaining each scenario, a pause before each, and a results table at the end (`--no-pause` runs straight through, `--auto-approve` skips the prompts) |
 | `./run.sh metrics` | reliability metrics across all runs |
 | `./run.sh logs` / `./run.sh down` | follow the shortener's log / stop everything |
 

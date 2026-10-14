@@ -35,10 +35,11 @@ public class ConsoleRunListener implements RunListener {
         rollbacks.set(0);
         List<List<String>> waves = pipeline.waves();
         synchronized (out) {
-            out.printf("Pipeline '%s' · %d stages · %d waves%n", pipeline.name(), pipeline.size(), waves.size());
+            out.println(Ansi.bold(Ansi.cyan("Pipeline '%s' · %d stages · %d waves".formatted(pipeline.name(),
+                    pipeline.size(), waves.size()))));
             for (int i = 0; i < waves.size(); i++) {
                 String note = waves.get(i).size() > 1 ? "   (parallel)" : "";
-                out.printf("  wave %d: %s%s%n", i + 1, String.join(", ", waves.get(i)), note);
+                out.printf("  wave %d: %s%s%n", i + 1, String.join(", ", waves.get(i)), Ansi.dim(note));
             }
             out.println();
         }
@@ -47,7 +48,7 @@ public class ConsoleRunListener implements RunListener {
     @Override
     public void replanning(String changedStage, List<String> rerun, List<String> reused) {
         synchronized (out) {
-            out.printf("%nRe-planning after a change to '%s'%n", changedStage);
+            out.printf("%n%s%n", Ansi.bold(Ansi.magenta("Re-planning after a change to '" + changedStage + "'")));
             out.printf("  re-run: %s%n", String.join(", ", rerun));
             out.printf("  reuse:  %s%n%n", reused.isEmpty() ? "(nothing)" : String.join(", ", reused));
         }
@@ -55,35 +56,35 @@ public class ConsoleRunListener implements RunListener {
 
     @Override
     public void stageStarted(Stage stage, Duration startedAt) {
-        line(startedAt, "▶ " + stage.id());
+        line(startedAt, Ansi.cyan("▶ " + stage.id()));
     }
 
     @Override
     public void gateFailed(Stage stage, Gate gate, GateDecision decision) {
-        line(now(), "⛔ %-16s %s: %s".formatted(stage.id(), gate.name(), decision.reason()));
+        line(now(), Ansi.red("⛔ %-16s %s: %s".formatted(stage.id(), gate.name(), decision.reason())));
     }
 
     @Override
     public void stageRetrying(Stage stage, int failedAttempt, int maxAttempts, String reason) {
-        line(now(), "↻ %-16s attempt %d/%d failed: %s · retrying".formatted(stage.id(), failedAttempt, maxAttempts,
-                reason));
+        line(now(), Ansi.yellow("↻ %-16s attempt %d/%d failed: %s · retrying".formatted(stage.id(), failedAttempt,
+                maxAttempts, reason)));
     }
 
     @Override
     public void stageRolledBack(Stage stage, String whatWasUndone) {
         rollbacks.incrementAndGet();
-        line(now(), "↺ %-16s rolled back: %s".formatted(stage.id(), whatWasUndone));
+        line(now(), Ansi.magenta("↺ %-16s rolled back: %s".formatted(stage.id(), whatWasUndone)));
     }
 
     /** Free-form progress note, e.g. a switch to the fallback model. */
     public void note(String stageId, String message) {
-        line(now(), "⤳ %-16s %s".formatted(stageId, message));
+        line(now(), Ansi.yellow("⤳ %-16s %s".formatted(stageId, message)));
     }
 
     @Override
     public void stageFinished(StageOutcome outcome) {
         if (outcome.reused()) {
-            line(Duration.ZERO, "= %-16s reused from the previous run".formatted(outcome.stageId()));
+            line(Duration.ZERO, Ansi.dim("= %-16s reused from the previous run".formatted(outcome.stageId())));
             return;
         }
         Duration finishedAt = outcome.startedAt().plus(outcome.duration());
@@ -93,20 +94,25 @@ public class ConsoleRunListener implements RunListener {
             default -> seconds(outcome.duration()) + "  " + outcome.detail()
                     + (outcome.retries() > 0 ? "  (attempt " + outcome.attempts() + ")" : "");
         };
-        line(finishedAt, "%s %-16s %s".formatted(symbol(outcome.status()), outcome.stageId(), text));
+        String symbolAndStage = "%s %-16s".formatted(symbol(outcome.status()), outcome.stageId());
+        line(finishedAt, switch (outcome.status()) {
+            case SUCCEEDED -> Ansi.green(symbolAndStage) + " " + text;
+            case FAILED, BLOCKED -> Ansi.red(symbolAndStage + " " + text);
+            case SKIPPED -> Ansi.dim(symbolAndStage + " " + text);
+        });
     }
 
     @Override
     public void safeStop(String reason) {
-        line(now(), "■ safe-stop: " + reason + " · no new stages will start");
+        line(now(), Ansi.bold(Ansi.red("■ safe-stop: " + reason + " · no new stages will start")));
     }
 
     @Override
     public void runFinished(RunReport report) {
         synchronized (out) {
             out.println();
-            out.printf("Run %s · %d succeeded, %d failed, %d blocked, %d skipped%s%n",
-                    report.succeeded() ? "OK" : "STOPPED",
+            out.printf("%s · %d succeeded, %d failed, %d blocked, %d skipped%s%n",
+                    report.succeeded() ? Ansi.bold(Ansi.green("Run OK")) : Ansi.bold(Ansi.red("Run STOPPED")),
                     report.count(StageStatus.SUCCEEDED), report.count(StageStatus.FAILED),
                     report.count(StageStatus.BLOCKED), report.count(StageStatus.SKIPPED),
                     report.reusedCount() > 0 ? " (" + report.reusedCount() + " reused)" : "");
@@ -120,7 +126,7 @@ public class ConsoleRunListener implements RunListener {
 
     private void line(Duration at, String text) {
         synchronized (out) {
-            out.printf("  %s  %s%n", clock(at), text);
+            out.printf("  %s  %s%n", Ansi.dim(clock(at)), text);
         }
     }
 

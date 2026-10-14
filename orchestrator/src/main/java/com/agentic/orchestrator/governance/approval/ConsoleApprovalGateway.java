@@ -6,6 +6,8 @@ import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.util.List;
 
+import com.agentic.orchestrator.console.Ansi;
+
 /**
  * Asks the person at the terminal. While the question is open, other stages' output is held back
  * (both use the same PrintStream as a lock), so the prompt is never interleaved with progress lines.
@@ -27,7 +29,8 @@ public final class ConsoleApprovalGateway implements ApprovalGateway {
     @Override
     public ApprovalDecision request(ApprovalRequest request) {
         synchronized (out) {
-            out.printf("%n  ⏸ approval required · %s · %s%n", request.stageId(), request.title());
+            out.printf("%n  %s%n", Ansi.bold(Ansi.yellow(
+                    "⏸ approval required · " + request.stageId() + " · " + request.title())));
             out.printf("    policy: %s%n", request.policyId());
             // The reviewer must see the whole change set; only very long evidence is cut, and the cut is stated.
             List<String> lines = request.evidence().lines().toList();
@@ -43,11 +46,11 @@ public final class ConsoleApprovalGateway implements ApprovalGateway {
                 String answer = readLine().strip().toLowerCase();
                 switch (answer) {
                     case "y", "yes" -> {
-                        out.printf("    ✓ approved by %s%n%n", approver);
+                        out.printf("    %s%n%n", Ansi.green("✓ approved by " + approver));
                         return ApprovalDecision.approved(approver);
                     }
                     case "n", "no" -> {
-                        out.printf("    ✗ rejected by %s%n%n", approver);
+                        out.printf("    %s%n%n", Ansi.red("✗ rejected by " + approver));
                         return ApprovalDecision.rejected(approver);
                     }
                     case "r", "revise" -> {
