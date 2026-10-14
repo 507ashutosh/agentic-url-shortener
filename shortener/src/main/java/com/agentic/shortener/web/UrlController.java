@@ -58,7 +58,16 @@ public class UrlController {
 
     // 302 (temporary) rather than 301: browsers cache 301s, which would hide later clicks from the stats.
     @GetMapping("/" + CODE)
-    @Operation(summary = "Follow a short link", description = "Redirects to the original URL and counts the click.")
+    @Operation(summary = "Follow a short link", description = """
+            Redirects to the original URL and counts the click. This is the link visitors open.
+
+            **"Try it out" here shows "Failed to fetch". That is expected, not an error:** the browser \
+            follows the redirect to the original website, which does not allow Swagger UI's page to read \
+            its response (CORS). The click is still counted.
+
+            To test it, open `http://localhost:8080/{code}` in a browser tab, or run \
+            `curl -i http://localhost:8080/{code}` to see the 302 and its `Location` header. \
+            Use `GET /stats/{code}` to check the click count.""")
     @ApiResponse(responseCode = "302", description = "Redirect to the original URL",
             headers = @Header(name = "Location", description = "The original URL"))
     @ApiResponse(responseCode = "404", description = "Unknown code",

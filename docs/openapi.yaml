@@ -49,7 +49,12 @@ paths:
       tags:
       - Short links
       summary: Follow a short link
-      description: Redirects to the original URL and counts the click.
+      description: |-
+        Redirects to the original URL and counts the click. This is the link visitors open.
+
+        **"Try it out" here shows "Failed to fetch". That is expected, not an error:** the browser follows the redirect to the original website, which does not allow Swagger UI's page to read its response (CORS). The click is still counted.
+
+        To test it, open `http://localhost:8080/{code}` in a browser tab, or run `curl -i http://localhost:8080/{code}` to see the 302 and its `Location` header. Use `GET /stats/{code}` to check the click count.
       operationId: redirect
       parameters:
       - name: code
