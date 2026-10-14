@@ -1,0 +1,64 @@
+SUMMARY: API guide covering the three endpoints, errors, rate limiting and configuration
+
+<<<FILE docs/features/url-shortener.md
+# URL shortener API
+
+Turns long URLs into short links, redirects visitors and counts clicks.
+Interactive documentation: `http://localhost:8080/swagger-ui.html` · OpenAPI spec: `/v3/api-docs`.
+
+## Create a short link
+
+```bash
+curl -X POST localhost:8080/shorten -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com/some/long/path"}'
+```
+
+`201 Created`, with the short URL in the `Location` header:
+
+```json
+{"code": "Ab3dE9x", "shortUrl": "http://localhost:8080/Ab3dE9x", "originalUrl": "https://example.com/some/long/path"}
+```
+
+## Follow a short link
+
+`GET /Ab3dE9x` answers `302 Found` with `Location: https://example.com/some/long/path`, and counts the click.
+
+## Statistics
+
+```bash
+curl localhost:8080/stats/Ab3dE9x
+```
+
+```json
+{"code": "Ab3dE9x", "originalUrl": "https://example.com/some/long/path", "clickCount": 3,
+ "createdAt": "2026-10-14T10:00:00Z", "lastAccessedAt": "2026-10-14T10:05:00Z"}
+```
+
+## Errors
+
+All errors are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details:
+
+| Case | Status |
+|------|--------|
+| URL missing, malformed, not http(s), or longer than 2048 characters | 400 |
+| Body is not JSON | 400 |
+| Unknown code | 404 |
+| More than 20 links created from one IP in a minute | 429, with `Retry-After` |
+
+```json
+{"title": "Bad Request", "status": 400, "detail": "url must start with http:// or https://", "instance": "/shorten"}
+```
+
+## Configuration
+
+| Property | Default | Meaning |
+|----------|---------|---------|
+| `shortener.base-url` | `http://localhost:8080` | Prefix of returned short URLs |
+| `shortener.rate-limit.requests` | `20` | Links per client IP per window |
+| `shortener.rate-limit.window` | `1m` | Rate-limit window |
+
+## Operations
+
+- Health: `GET /actuator/health`
+- Data is held in memory (H2) and is lost on restart.
+>>>

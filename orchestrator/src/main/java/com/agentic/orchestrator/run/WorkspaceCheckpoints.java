@@ -44,6 +44,12 @@ public final class WorkspaceCheckpoints {
         return changes(baseline, folders, true);
     }
 
+    /** Everything committed since the baseline in these folders, as a unified diff that `git apply` accepts. */
+    public synchronized String patchSinceBaseline(List<String> folders) {
+        List<String> existing = existingOrTracked("HEAD", folders);
+        return existing.isEmpty() ? "" : git(concat(List.of("diff", "--no-color", baseline, "HEAD", "--"), existing));
+    }
+
     /** Accepts the current state of these folders as a new checkpoint. */
     public synchronized void commit(String label, List<String> folders) {
         List<String> existing = existing(folders);

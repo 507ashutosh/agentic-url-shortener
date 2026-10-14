@@ -1,0 +1,17 @@
+SUMMARY: Clarified by a human: operational reliability (probes, fail-fast database, 503s, graceful shutdown); persistence stays out of scope
+DECISION: Scope confirmed by a human reviewer: database outages and restarts/deploys | BECAUSE: the reviewer answered the open questions
+DECISION: Persistence across restarts is out of scope for this change | BECAUSE: confirmed by the reviewer; it needs a separate infrastructure decision
+ASSUMPTION: No numeric availability target was given; the change targets predictable failure behaviour rather than a specific SLO
+ASSUMPTION: Existing API behaviour for successful requests must not change
+
+## Clarified requirement
+
+Make the service behave predictably during database outages and restarts, so a platform such as Kubernetes can operate it safely, without adding infrastructure.
+
+## Acceptance criteria
+
+1. `GET /actuator/health/liveness` and `/actuator/health/readiness` each return 200 `{"status":"UP"}` when healthy.
+2. A request that fails because the database is unavailable returns 503 with a `Retry-After` header and a problem-detail body, not 500.
+3. Database connection attempts fail within 2 seconds instead of 30.
+4. Shutdown is graceful: in-flight requests get up to 20 seconds to complete.
+5. All existing tests keep passing; successful responses are unchanged.

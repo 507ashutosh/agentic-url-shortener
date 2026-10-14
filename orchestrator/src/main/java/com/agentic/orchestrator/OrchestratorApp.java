@@ -92,7 +92,7 @@ public final class OrchestratorApp {
         PrintStream out = System.out;
         ConsoleRunListener console = new ConsoleRunListener(out);
         Scenario scenario = new ScenarioLoader(repo.resolve("scenarios")).load(scenarioName);
-        RunWorkspace workspace = RunWorkspace.create(repo, scenario.name());
+        RunWorkspace workspace = RunWorkspace.create(repo, scenario.name(), scenario.startsFromScaffold());
         WorkspaceCheckpoints checkpoints = WorkspaceCheckpoints.init(workspace.workspaceDir());
         AuditLog audit = new AuditLog(workspace.runDir().resolve("audit.jsonl"), workspace.runId());
         RunContext context = new RunContext(scenario, workspace, audit);

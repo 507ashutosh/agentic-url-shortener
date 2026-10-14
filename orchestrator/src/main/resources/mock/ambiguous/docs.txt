@@ -1,0 +1,46 @@
+SUMMARY: Operations guide: health probes, behaviour during database outages, and graceful shutdown
+
+<<<FILE docs/features/reliability.md
+# Reliability and operations
+
+How the service behaves when things go wrong, and how a platform should run it.
+
+## Health probes
+
+| Endpoint | Meaning | Platform action when it fails |
+|----------|---------|-------------------------------|
+| `GET /actuator/health/liveness` | The process is alive | Restart the instance |
+| `GET /actuator/health/readiness` | The instance can serve traffic | Stop routing traffic to it |
+| `GET /actuator/health` | Combined status | Monitoring |
+
+Kubernetes example:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+readinessProbe:
+  httpGet: { path: /actuator/health/readiness, port: 8080 }
+terminationGracePeriodSeconds: 30
+```
+
+## Database unavailable
+
+Connection attempts give up after 2 seconds. The request then fails with:
+
+```
+HTTP/1.1 503 Service Unavailable
+Retry-After: 5
+
+{"title": "Service Unavailable", "status": 503, "detail": "The service is temporarily unavailable. Please retry shortly."}
+```
+
+Clients should retry after the `Retry-After` delay. Internal error details are never included in the response.
+
+## Shutdown
+
+Shutdown is graceful: the service stops accepting new requests and gives in-flight requests up to 20 seconds to finish. Set the platform's termination grace period above 20 seconds.
+
+## Not covered
+
+Data is still held in memory and is lost on restart. Durable storage is a separate decision.
+>>>

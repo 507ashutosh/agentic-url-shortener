@@ -104,10 +104,16 @@ public final class RunContext {
         return snapshot(approvals);
     }
 
-    /** Called by the release gate when a reviewer sends a stage back. */
+    /** Called by the release gate when a reviewer sends a stage back: re-planning follows the run. */
     public void requestRevision(String stageId, String text) {
         pendingRevision.set(new Revision(stageId, text));
+        addFeedback(stageId, text);
+    }
+
+    /** Human input for a stage (answers, review comments); the agent includes it in its next prompt. */
+    public void addFeedback(String stageId, String text) {
         feedback.computeIfAbsent(stageId, k -> Collections.synchronizedList(new ArrayList<>())).add(text);
+        audit.record("feedback", stageId, AuditSink.data("text", text));
     }
 
     /** Returns and clears the pending revision, if any. */

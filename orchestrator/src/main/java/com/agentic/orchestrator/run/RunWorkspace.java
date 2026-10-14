@@ -23,6 +23,8 @@ public final class RunWorkspace {
 
     // What gets copied from the repository into the workspace.
     private static final List<String> BASELINE = List.of("pom.xml", "mvnw", "mvnw.cmd", ".mvn", "shortener");
+    // A greenfield start: only the build skeleton, no source code.
+    private static final List<String> SCAFFOLD = List.of("pom.xml", "mvnw", "mvnw.cmd", ".mvn", "shortener/pom.xml");
     private static final Set<String> SKIPPED_DIRS = Set.of("target", ".git", ".idea");
 
     private final String runId;
@@ -41,6 +43,11 @@ public final class RunWorkspace {
 
     /** Creates runs/&lt;run-id&gt;/ and copies the current shortener into its workspace. */
     public static RunWorkspace create(Path repoRoot, String scenarioName) {
+        return create(repoRoot, scenarioName, false);
+    }
+
+    /** @param scaffoldOnly copy only the build files, so agents build the service from scratch */
+    public static RunWorkspace create(Path repoRoot, String scenarioName, boolean scaffoldOnly) {
         String baseId = "run-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
                 + "-" + scenarioName;
         RunWorkspace ws;
@@ -62,7 +69,7 @@ public final class RunWorkspace {
         }
         try {
             Files.createDirectories(ws.artifactsDir);
-            for (String entry : BASELINE) {
+            for (String entry : scaffoldOnly ? SCAFFOLD : BASELINE) {
                 copy(repoRoot.resolve(entry), ws.workspaceDir.resolve(entry));
             }
         } catch (IOException e) {
@@ -95,6 +102,9 @@ public final class RunWorkspace {
     public String codebaseSnapshot() {
         Path shortener = workspaceDir.resolve("shortener");
         StringBuilder snapshot = new StringBuilder();
+        if (!Files.isDirectory(shortener.resolve("src"))) {
+            snapshot.append("(no source code yet: only the build file below)\n\n");
+        }
         try (Stream<Path> files = Files.walk(shortener)) {
             files.filter(Files::isRegularFile)
                     .filter(p -> SKIPPED_DIRS.stream().noneMatch(d -> shortener.relativize(p).startsWith(d)))

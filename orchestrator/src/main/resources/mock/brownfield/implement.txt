@@ -218,8 +218,15 @@ public class UrlService {
 <<<FILE shortener/src/main/java/com/agentic/shortener/web/dto/ShortenRequest.java
 package com.agentic.shortener.web.dto;
 
-/** @param expiresInDays optional; the link stops working after this many days (1-3650) */
-public record ShortenRequest(String url, Integer expiresInDays) {
+import io.swagger.v3.oas.annotations.media.Schema;
+
+public record ShortenRequest(
+        @Schema(description = "The http(s) URL to shorten, at most 2048 characters",
+                example = "https://example.com/some/long/path", requiredMode = Schema.RequiredMode.REQUIRED)
+        String url,
+        @Schema(description = "Optional: the link stops working after this many days (1-3650); omit for never",
+                example = "7")
+        Integer expiresInDays) {
 }
 >>>
 <<<FILE shortener/src/main/java/com/agentic/shortener/web/dto/ShortenResponse.java
@@ -227,7 +234,13 @@ package com.agentic.shortener.web.dto;
 
 import java.time.Instant;
 
-public record ShortenResponse(String code, String shortUrl, String originalUrl, Instant expiresAt) {
+import io.swagger.v3.oas.annotations.media.Schema;
+
+public record ShortenResponse(
+        @Schema(example = "Ab3dE9x") String code,
+        @Schema(example = "http://localhost:8080/Ab3dE9x") String shortUrl,
+        @Schema(example = "https://example.com/some/long/path") String originalUrl,
+        @Schema(description = "When the link stops working; null if it never expires") Instant expiresAt) {
 }
 >>>
 <<<FILE shortener/src/main/java/com/agentic/shortener/web/dto/StatsResponse.java
@@ -235,9 +248,16 @@ package com.agentic.shortener.web.dto;
 
 import java.time.Instant;
 
-public record StatsResponse(String code, String originalUrl, long clickCount,
-                            Instant createdAt, Instant lastAccessedAt,
-                            Instant expiresAt, boolean expired) {
+import io.swagger.v3.oas.annotations.media.Schema;
+
+public record StatsResponse(
+        @Schema(example = "Ab3dE9x") String code,
+        @Schema(example = "https://example.com/some/long/path") String originalUrl,
+        @Schema(description = "Number of redirects served", example = "3") long clickCount,
+        Instant createdAt,
+        @Schema(description = "Time of the last redirect; null if never visited") Instant lastAccessedAt,
+        @Schema(description = "When the link stops working; null if it never expires") Instant expiresAt,
+        @Schema(description = "Whether the link has expired") boolean expired) {
 }
 >>>
 <<<FILE shortener/src/main/java/com/agentic/shortener/web/UrlController.java
@@ -247,6 +267,7 @@ import java.net.URI;
 import java.time.Clock;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -261,7 +282,16 @@ import com.agentic.shortener.web.dto.ShortenRequest;
 import com.agentic.shortener.web.dto.ShortenResponse;
 import com.agentic.shortener.web.dto.StatsResponse;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.headers.Header;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 @RestController
+@Tag(name = "Short links")
 public class UrlController {
 
     // Codes are letters and digits only, so /{code} never swallows other paths.
@@ -278,6 +308,13 @@ public class UrlController {
     }
 
     @PostMapping("/shorten")
+    @Operation(summary = "Create a short link", description = "Optionally give it an expiry in days.")
+    @ApiResponse(responseCode = "201", description = "Link created; Location holds the short URL")
+    @ApiResponse(responseCode = "400", description = "Invalid URL, or expiresInDays outside 1-3650",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "429", description = "Too many links created from this IP; see Retry-After",
+            headers = @Header(name = "Retry-After", description = "Seconds to wait"),
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
     public ResponseEntity<ShortenResponse> shorten(@RequestBody ShortenRequest request) {
         UrlMapping mapping = urlService.shorten(request.url(), request.expiresInDays());
         String shortUrl = properties.baseUrl() + "/" + mapping.getCode();
@@ -288,14 +325,25 @@ public class UrlController {
 
     // 302 (temporary) rather than 301: browsers cache 301s, which would hide later clicks from the stats.
     @GetMapping("/" + CODE)
-    public ResponseEntity<Void> redirect(@PathVariable String code) {
+    @Operation(summary = "Follow a short link", description = "Redirects to the original URL and counts the click.")
+    @ApiResponse(responseCode = "302", description = "Redirect to the original URL",
+            headers = @Header(name = "Location", description = "The original URL"))
+    @ApiResponse(responseCode = "404", description = "Unknown code",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "410", description = "The link has expired",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    public ResponseEntity<Void> redirect(@Parameter(example = "Ab3dE9x") @PathVariable String code) {
         return ResponseEntity.status(HttpStatus.FOUND)
                 .location(URI.create(urlService.resolve(code)))
                 .build();
     }
 
     @GetMapping("/stats/" + CODE)
-    public StatsResponse stats(@PathVariable String code) {
+    @Operation(summary = "Click statistics for a short link", description = "Still available after expiry.")
+    @ApiResponse(responseCode = "200", description = "Statistics")
+    @ApiResponse(responseCode = "404", description = "Unknown code",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    public StatsResponse stats(@Parameter(example = "Ab3dE9x") @PathVariable String code) {
         UrlMapping mapping = urlService.stats(code);
         return new StatsResponse(mapping.getCode(), mapping.getOriginalUrl(), mapping.getClickCount(),
                 mapping.getCreatedAt(), mapping.getLastAccessedAt(),

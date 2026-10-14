@@ -1,0 +1,31 @@
+SUMMARY: Layered Spring Boot service; schema owned by schema.sql; random 7-character codes; 302 redirects; fixed-window per-IP rate limit
+DECISION: Random 7-character codes from 62 characters with SecureRandom, retry up to 5 times on collision | BECAUSE: sequential codes would let anyone enumerate other people's links
+DECISION: Redirect with 302, not 301 | BECAUSE: browsers cache 301 redirects, so later clicks would never reach the server and stats would undercount
+DECISION: Count clicks with a single UPDATE ... SET click_count = click_count + 1 | BECAUSE: read-modify-write in Java loses clicks under concurrent visits
+DECISION: Schema in schema.sql with Hibernate set to validate, not generate | BECAUSE: schema changes become explicit, reviewable file changes
+DECISION: Rate limit only POST /shorten, 20 per minute per IP, in memory | BECAUSE: creation is the abuse vector; redirects must stay fast; in-memory is enough for one instance
+DECISION: Use the remote address for rate limiting, not X-Forwarded-For | BECAUSE: that header is client-controlled unless a trusted proxy sets it
+DECISION: Errors as RFC 9457 problem details | BECAUSE: one consistent, standard error shape for every endpoint
+
+## API contract
+
+| Method | Path | Success | Errors |
+|--------|------|---------|--------|
+| POST | `/shorten` body `{"url"}` | 201 `{"code","shortUrl","originalUrl"}`, `Location` header | 400 invalid URL or body, 429 rate limited |
+| GET | `/{code}` (letters and digits, 4-10) | 302 to the original URL | 404 unknown code |
+| GET | `/stats/{code}` | 200 `{"code","originalUrl","clickCount","createdAt","lastAccessedAt"}` | 404 unknown code |
+| GET | `/actuator/health` | 200 `{"status":"UP"}` | |
+| GET | `/v3/api-docs`, `/swagger-ui.html` | OpenAPI spec and UI | |
+
+## Schema
+
+`url_mapping(id identity PK, code varchar(10) unique, original_url varchar(2048), created_at timestamptz, click_count bigint default 0, last_accessed_at timestamptz)`
+
+## Packages and classes (com.agentic.shortener)
+
+- `domain`: `UrlMapping` entity, `UrlMappingRepository` with `findByCode`, `existsByCode`, `recordClick(code, now)`
+- `service`: `UrlValidator`, `CodeGenerator`, `UrlService` (`shorten`, `resolve`, `stats`), `InvalidUrlException`, `CodeNotFoundException`
+- `web`: `UrlController`, `ApiExceptionHandler`, DTO records `ShortenRequest`, `ShortenResponse`, `StatsResponse`
+- `ratelimit`: `RateLimiter` (testable with a `Clock`), `RateLimitFilter`
+- `config`: `ShortenerProperties` (`shortener.base-url`, `shortener.rate-limit.*`), `OpenApiConfig`
+- One `Clock` bean, injected everywhere time is read, so tests control time.

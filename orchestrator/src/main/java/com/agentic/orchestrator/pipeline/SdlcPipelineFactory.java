@@ -16,6 +16,7 @@ import com.agentic.orchestrator.agent.roles.TestAgent;
 import com.agentic.orchestrator.engine.Pipeline;
 import com.agentic.orchestrator.engine.RollbackHandler;
 import com.agentic.orchestrator.engine.StageControls;
+import com.agentic.orchestrator.governance.ClarificationCheckpoint;
 import com.agentic.orchestrator.governance.PolicyGate;
 import com.agentic.orchestrator.governance.ReleaseApprovalGate;
 import com.agentic.orchestrator.governance.approval.ApprovalGateway;
@@ -34,11 +35,12 @@ import com.agentic.orchestrator.tools.TestRunner;
 /**
  * Wires the agents and tools into the dependency graph and attaches the governance to each stage:
  * <pre>
- *                ┌ plan            ┐            ┌ implement ┐
- * requirements → ┤                 ├→ design → ┼ tests     ┼→ validate → release
- *                └ impact-analysis ┘            └ docs      ┘
+ *                           ┌ plan            ┐            ┌ implement ┐
+ * requirements → clarify → ┤                 ├→ design → ┼ tests     ┼→ validate → release
+ *                           └ impact-analysis ┘            └ docs      ┘
  * </pre>
  * <ul>
+ *   <li>clarify: a human answers the requirement's open questions or accepts its assumptions</li>
  *   <li>agents: 3 attempts; agents that write files are checked by the policies after every attempt,
  *       committed when accepted and rolled back when not</li>
  *   <li>validate: 1 attempt (a build is deterministic); final secret scan; on failure the whole
@@ -92,7 +94,7 @@ public final class SdlcPipelineFactory {
                     }
                 });
 
-        ChangeSetBuilder changeSet = new ChangeSetBuilder();
+        ChangeSetBuilder changeSet = new ChangeSetBuilder(checkpoints);
         StageControls release = StageControls.defaults()
                 .withExitGate(new ReleaseApprovalGate(approvals, context, List.copyOf(folders.keySet())));
 
@@ -102,8 +104,11 @@ public final class SdlcPipelineFactory {
             builder.stage(id, () -> agent.run(context), controls.get(id), deps);
         };
         add.stage("requirements");
-        add.stage("plan", "requirements");
-        add.stage("impact-analysis", "requirements");
+        ClarificationCheckpoint clarify = new ClarificationCheckpoint(
+                agents.stream().filter(a -> a.id().equals("requirements")).findFirst().orElseThrow(), approvals);
+        builder.stage(ClarificationCheckpoint.STAGE_ID, () -> clarify.run(context), "requirements");
+        add.stage("plan", ClarificationCheckpoint.STAGE_ID);
+        add.stage("impact-analysis", ClarificationCheckpoint.STAGE_ID);
         add.stage("design", "plan", "impact-analysis");
         add.stage("implement", "design");
         add.stage("tests", "design");

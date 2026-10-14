@@ -63,13 +63,13 @@ public final class ConsoleApprovalGateway implements ApprovalGateway {
     }
 
     private ApprovalDecision revise(ApprovalRequest request) {
-        String stage;
-        do {
+        String stage = request.revisableStages().size() == 1 ? request.revisableStages().get(0) : null;
+        while (stage == null || !request.revisableStages().contains(stage)) {
             out.printf("    which stage should change? %s: ", request.revisableStages());
             out.flush();
             stage = readLine().strip();
-        } while (!request.revisableStages().contains(stage));
-        out.print("    what should change? ");
+        }
+        out.print("    your input (answers or what should change): ");
         out.flush();
         String feedback = readLine().strip();
         out.printf("    ↺ revision of '%s' requested by %s%n%n", stage, approver);

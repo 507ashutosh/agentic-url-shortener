@@ -32,7 +32,8 @@ public final class ScenarioLoader {
                     required(data, "name", file),
                     required(data, "type", file),
                     required(data, "title", file),
-                    required(data, "requirement", file).strip());
+                    required(data, "requirement", file).strip(),
+                    String.valueOf(data.getOrDefault("baseline", "repo")));
         } catch (IOException e) {
             throw new IllegalStateException("Could not read " + file, e);
         }

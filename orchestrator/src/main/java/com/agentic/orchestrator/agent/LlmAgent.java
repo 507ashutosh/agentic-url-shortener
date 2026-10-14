@@ -82,7 +82,8 @@ public abstract class LlmAgent implements Agent {
         }
         List<String> feedback = context.feedbackFor(id());
         if (!feedback.isEmpty()) {
-            prompt.append("# Reviewer feedback on your previous output (you must address it)\n\n");
+            prompt.append(com.agentic.orchestrator.llm.ScriptedLlmClient.FEEDBACK_HEADING)
+                    .append(" on your previous output (you must address it)\n\n");
             feedback.forEach(f -> prompt.append("- ").append(f).append("\n"));
             prompt.append("\n");
         }

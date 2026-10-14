@@ -89,6 +89,16 @@ class ShortenerIntegrationTest {
                 .andExpect(jsonPath("$.status").value("UP"));
     }
 
+    @Test
+    void openApiSpecDescribesAllThreeEndpoints() throws Exception {
+        mockMvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.info.title").value("URL Shortener API"))
+                .andExpect(jsonPath("$.paths['/shorten'].post").exists())
+                .andExpect(jsonPath("$.paths['/{code}'].get").exists())
+                .andExpect(jsonPath("$.paths['/stats/{code}'].get").exists());
+    }
+
     private String shorten(String url) throws Exception {
         String body = mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"url\": \"" + url + "\"}"))

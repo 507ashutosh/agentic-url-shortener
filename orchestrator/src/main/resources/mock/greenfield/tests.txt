@@ -1,0 +1,413 @@
+SUMMARY: 6 test classes: unit tests per component and integration tests over HTTP with a real database
+DECISION: Test the rate limiter with a controllable clock instead of waiting | BECAUSE: fast and deterministic
+DECISION: Integration tests start the full application with MockMvc | BECAUSE: they exercise routing, validation, persistence and error mapping together
+ASSUMPTION: The design's class and method names are used exactly as written
+
+Covers acceptance criteria 1-9.
+
+<<<FILE shortener/src/test/java/com/agentic/shortener/RateLimitIntegrationTest.java
+package com.agentic.shortener;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+
+@SpringBootTest(properties = "shortener.rate-limit.requests=2")
+@AutoConfigureMockMvc
+class RateLimitIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Test
+    void thirdShortenRequestInTheWindowGets429ButReadsStillWork() throws Exception {
+        for (int i = 0; i < 2; i++) {
+            mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"url\": \"https://example.com\"}"))
+                    .andExpect(status().isCreated());
+        }
+
+        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\": \"https://example.com\"}"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string("Retry-After", "60"))
+                .andExpect(jsonPath("$.status").value(429));
+
+        mockMvc.perform(get("/actuator/health")).andExpect(status().isOk());
+    }
+}
+>>>
+<<<FILE shortener/src/test/java/com/agentic/shortener/ShortenerIntegrationTest.java
+package com.agentic.shortener;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+
+import com.jayway.jsonpath.JsonPath;
+
+/** Starts the whole application with a real H2 database and calls it over HTTP. */
+@SpringBootTest(properties = "shortener.rate-limit.requests=1000")
+@AutoConfigureMockMvc
+class ShortenerIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Test
+    void shortenThenRedirectThenStats() throws Exception {
+        String code = shorten("https://example.com/some/long/path");
+
+        mockMvc.perform(get("/" + code))
+                .andExpect(status().isFound())
+                .andExpect(header().string("Location", "https://example.com/some/long/path"));
+        mockMvc.perform(get("/" + code)).andExpect(status().isFound());
+
+        mockMvc.perform(get("/stats/" + code))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(code))
+                .andExpect(jsonPath("$.originalUrl").value("https://example.com/some/long/path"))
+                .andExpect(jsonPath("$.clickCount").value(2))
+                .andExpect(jsonPath("$.createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.lastAccessedAt").isNotEmpty());
+    }
+
+    @Test
+    void shortenReturnsTheShortUrlAndLocationHeader() throws Exception {
+        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\": \"https://example.com\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.shortUrl").value(org.hamcrest.Matchers.startsWith("http://localhost:8080/")))
+                .andExpect(header().exists("Location"));
+    }
+
+    @Test
+    void newLinkStartsWithZeroClicks() throws Exception {
+        String code = shorten("https://example.com");
+
+        mockMvc.perform(get("/stats/" + code))
+                .andExpect(jsonPath("$.clickCount").value(0))
+                .andExpect(jsonPath("$.lastAccessedAt").isEmpty());
+    }
+
+    @Test
+    void invalidUrlIsRejectedWith400() throws Exception {
+        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\": \"javascript:alert(1)\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value("url must start with http:// or https://"));
+    }
+
+    @Test
+    void missingOrMalformedBodyIsRejectedWith400() throws Exception {
+        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON).content("not json"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void unknownCodeReturns404ForRedirectAndStats() throws Exception {
+        mockMvc.perform(get("/nosuch1")).andExpect(status().isNotFound());
+        mockMvc.perform(get("/stats/nosuch1")).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void healthEndpointReportsUp() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+    }
+
+    @Test
+    void openApiSpecDescribesAllThreeEndpoints() throws Exception {
+        mockMvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.info.title").value("URL Shortener API"))
+                .andExpect(jsonPath("$.paths['/shorten'].post").exists())
+                .andExpect(jsonPath("$.paths['/{code}'].get").exists())
+                .andExpect(jsonPath("$.paths['/stats/{code}'].get").exists());
+    }
+
+    private String shorten(String url) throws Exception {
+        String body = mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\": \"" + url + "\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String code = JsonPath.read(body, "$.code");
+        assertThat(code).hasSize(7);
+        return code;
+    }
+}
+>>>
+<<<FILE shortener/src/test/java/com/agentic/shortener/ratelimit/RateLimiterTest.java
+package com.agentic.shortener.ratelimit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+
+import org.junit.jupiter.api.Test;
+
+class RateLimiterTest {
+
+    private final MutableClock clock = new MutableClock();
+    private final RateLimiter limiter = new RateLimiter(2, Duration.ofMinutes(1), clock);
+
+    @Test
+    void allowsRequestsUpToTheLimitThenBlocks() {
+        assertThat(limiter.tryAcquire("client-a")).isTrue();
+        assertThat(limiter.tryAcquire("client-a")).isTrue();
+        assertThat(limiter.tryAcquire("client-a")).isFalse();
+    }
+
+    @Test
+    void countsEachClientSeparately() {
+        limiter.tryAcquire("client-a");
+        limiter.tryAcquire("client-a");
+
+        assertThat(limiter.tryAcquire("client-a")).isFalse();
+        assertThat(limiter.tryAcquire("client-b")).isTrue();
+    }
+
+    @Test
+    void allowsRequestsAgainOnceTheWindowHasPassed() {
+        limiter.tryAcquire("client-a");
+        limiter.tryAcquire("client-a");
+        assertThat(limiter.tryAcquire("client-a")).isFalse();
+
+        clock.advance(Duration.ofMinutes(1));
+
+        assertThat(limiter.tryAcquire("client-a")).isTrue();
+    }
+
+    /** A clock the test can move forward by hand. */
+    private static final class MutableClock extends Clock {
+
+        private Instant now = Instant.parse("2026-10-14T10:00:00Z");
+
+        void advance(Duration duration) {
+            now = now.plus(duration);
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+    }
+}
+>>>
+<<<FILE shortener/src/test/java/com/agentic/shortener/service/CodeGeneratorTest.java
+package com.agentic.shortener.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.util.HashSet;
+import java.util.Set;
+
+import org.junit.jupiter.api.Test;
+
+class CodeGeneratorTest {
+
+    private final CodeGenerator generator = new CodeGenerator();
+
+    @Test
+    void codesHaveTheExpectedLengthAndCharacters() {
+        for (int i = 0; i < 100; i++) {
+            assertThat(generator.next()).matches("[0-9A-Za-z]{" + CodeGenerator.LENGTH + "}");
+        }
+    }
+
+    @Test
+    void codesDoNotRepeatInASmallSample() {
+        Set<String> codes = new HashSet<>();
+        for (int i = 0; i < 1_000; i++) {
+            codes.add(generator.next());
+        }
+        assertThat(codes).hasSize(1_000);
+    }
+}
+>>>
+<<<FILE shortener/src/test/java/com/agentic/shortener/service/UrlServiceTest.java
+package com.agentic.shortener.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Optional;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import com.agentic.shortener.domain.UrlMapping;
+import com.agentic.shortener.domain.UrlMappingRepository;
+
+class UrlServiceTest {
+
+    private static final Instant NOW = Instant.parse("2026-10-14T10:00:00Z");
+
+    private final UrlMappingRepository repository = mock(UrlMappingRepository.class);
+    private final CodeGenerator codeGenerator = mock(CodeGenerator.class);
+    private UrlService service;
+
+    @BeforeEach
+    void setUp() {
+        service = new UrlService(repository, new UrlValidator(), codeGenerator,
+                Clock.fixed(NOW, ZoneOffset.UTC));
+        when(repository.save(any(UrlMapping.class))).thenAnswer(call -> call.getArgument(0));
+    }
+
+    @Test
+    void shortenSavesAMappingWithAGeneratedCode() {
+        when(codeGenerator.next()).thenReturn("abc1234");
+
+        UrlMapping saved = service.shorten("https://example.com");
+
+        assertThat(saved.getCode()).isEqualTo("abc1234");
+        assertThat(saved.getOriginalUrl()).isEqualTo("https://example.com");
+        assertThat(saved.getCreatedAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    void shortenRetriesWhenTheCodeIsAlreadyTaken() {
+        when(codeGenerator.next()).thenReturn("taken01", "free002");
+        when(repository.existsByCode("taken01")).thenReturn(true);
+
+        assertThat(service.shorten("https://example.com").getCode()).isEqualTo("free002");
+    }
+
+    @Test
+    void shortenGivesUpAfterTheMaximumNumberOfCollisions() {
+        when(codeGenerator.next()).thenReturn("taken01");
+        when(repository.existsByCode("taken01")).thenReturn(true);
+
+        assertThatThrownBy(() -> service.shorten("https://example.com"))
+                .isInstanceOf(IllegalStateException.class);
+        verify(codeGenerator, times(UrlService.MAX_CODE_ATTEMPTS)).next();
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    void shortenRejectsAnInvalidUrlWithoutSaving() {
+        assertThatThrownBy(() -> service.shorten("not-a-url")).isInstanceOf(InvalidUrlException.class);
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    void resolveReturnsTheUrlAndRecordsTheClick() {
+        when(repository.findByCode("abc1234"))
+                .thenReturn(Optional.of(new UrlMapping("abc1234", "https://example.com", NOW)));
+
+        assertThat(service.resolve("abc1234")).isEqualTo("https://example.com");
+        verify(repository).recordClick("abc1234", NOW);
+    }
+
+    @Test
+    void resolveThrowsForAnUnknownCode() {
+        when(repository.findByCode("missing")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.resolve("missing")).isInstanceOf(CodeNotFoundException.class);
+        verify(repository, never()).recordClick(any(), any());
+    }
+}
+>>>
+<<<FILE shortener/src/test/java/com/agentic/shortener/service/UrlValidatorTest.java
+package com.agentic.shortener.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
+
+class UrlValidatorTest {
+
+    private final UrlValidator validator = new UrlValidator();
+
+    @ParameterizedTest
+    @ValueSource(strings = {"https://example.com", "http://example.com/a/b?c=d#e", "HTTPS://EXAMPLE.COM"})
+    void acceptsHttpAndHttpsUrls(String url) {
+        assertThat(validator.validate(url)).isEqualTo(url);
+    }
+
+    @Test
+    void trimsSurroundingWhitespace() {
+        assertThat(validator.validate("  https://example.com  ")).isEqualTo("https://example.com");
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"   "})
+    void rejectsMissingUrl(String url) {
+        assertThatThrownBy(() -> validator.validate(url))
+                .isInstanceOf(InvalidUrlException.class)
+                .hasMessage("url is required");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"javascript:alert(1)", "file:///etc/passwd", "ftp://example.com", "example.com"})
+    void rejectsNonWebSchemes(String url) {
+        assertThatThrownBy(() -> validator.validate(url))
+                .isInstanceOf(InvalidUrlException.class)
+                .hasMessageContaining("http:// or https://");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"https://", "http:///path", "https://exa mple.com"})
+    void rejectsMalformedUrls(String url) {
+        assertThatThrownBy(() -> validator.validate(url)).isInstanceOf(InvalidUrlException.class);
+    }
+
+    @Test
+    void rejectsUrlsLongerThanTheLimit() {
+        String tooLong = "https://example.com/" + "a".repeat(UrlValidator.MAX_LENGTH);
+        assertThatThrownBy(() -> validator.validate(tooLong))
+                .isInstanceOf(InvalidUrlException.class)
+                .hasMessageContaining("at most");
+    }
+}
+>>>

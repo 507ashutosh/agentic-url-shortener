@@ -34,7 +34,7 @@ class LlmAgentTest {
         Files.createDirectories(repo.resolve("shortener/src/main/java"));
         Files.writeString(repo.resolve("shortener/pom.xml"), "<project/>");
         Files.writeString(repo.resolve("shortener/src/main/java/App.java"), "class App {}");
-        Scenario scenario = new Scenario("test", "brownfield", "Test", "Links should expire after N days.");
+        Scenario scenario = new Scenario("test", "brownfield", "Test", "Links should expire after N days.", "repo");
         context = new RunContext(scenario, RunWorkspace.create(repo, "test"));
     }
 

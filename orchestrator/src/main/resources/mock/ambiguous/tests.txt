@@ -1,0 +1,69 @@
+SUMMARY: 1 new integration test class: both probes report UP, and database-unavailable failures map to 503 with Retry-After
+DECISION: Simulate the database outage by making the service throw the Spring exceptions | BECAUSE: stopping a real database inside a unit test run is slow and flaky; the contract under test is the HTTP mapping
+
+<<<FILE shortener/src/test/java/com/agentic/shortener/ReliabilityIntegrationTest.java
+package com.agentic.shortener;
+
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.CannotCreateTransactionException;
+
+import com.agentic.shortener.service.UrlService;
+
+/** Health probes, and what clients see when the database is unavailable. */
+@SpringBootTest
+@AutoConfigureMockMvc
+class ReliabilityIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockitoBean
+    private UrlService urlService;
+
+    @Test
+    void livenessAndReadinessProbesReportUp() throws Exception {
+        mockMvc.perform(get("/actuator/health/liveness"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+        mockMvc.perform(get("/actuator/health/readiness"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+    }
+
+    @Test
+    void databaseFailureReturns503WithRetryAfterAndNoInternalDetails() throws Exception {
+        when(urlService.resolve(anyString()))
+                .thenThrow(new DataAccessResourceFailureException("Connection refused: jdbc:h2:secret-host"));
+
+        mockMvc.perform(get("/abc1234"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "5"))
+                .andExpect(jsonPath("$.detail").value("The service is temporarily unavailable. Please retry shortly."))
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("secret-host"))));
+    }
+
+    @Test
+    void transactionThatCannotStartAlsoReturns503() throws Exception {
+        when(urlService.stats(anyString()))
+                .thenThrow(new CannotCreateTransactionException("Could not open JPA EntityManager"));
+
+        mockMvc.perform(get("/stats/abc1234"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "5"));
+    }
+}
+>>>

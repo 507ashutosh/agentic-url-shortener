@@ -1,0 +1,24 @@
+SUMMARY: Requirement is ambiguous; interpreted as operational reliability: health probes, fail-fast database access, clear 503s, graceful shutdown
+QUESTION: Reliable against what: database outages, traffic spikes, deploys/restarts, or data loss?
+QUESTION: Is there a target availability or latency (e.g. 99.9%, p99 < 200 ms)?
+QUESTION: Is persistence across restarts in scope (replacing the in-memory database)?
+ASSUMPTION: "Reliable" means the service behaves predictably when things go wrong and can be operated safely by an orchestrator such as Kubernetes
+ASSUMPTION: No new infrastructure (no external database, cache or queue) in this change
+ASSUMPTION: Persistence across restarts is out of scope; it is a larger, separate decision
+ASSUMPTION: Existing API behaviour for successful requests must not change
+
+## How the requirement was normalised
+
+"Make it more reliable" names no failure mode, target or scope. Rather than guess one big change, it is narrowed to the reliability gaps visible in the current service that can be fixed without new infrastructure:
+
+1. A platform cannot tell "alive" from "ready": only one combined health endpoint exists.
+2. When the database is unreachable, requests hang on the connection pool's default 30 s timeout, then fail as a generic 500.
+3. On shutdown, in-flight requests are cut off.
+
+## Acceptance criteria
+
+1. `GET /actuator/health/liveness` and `/actuator/health/readiness` each return 200 `{"status":"UP"}` when healthy.
+2. A request that fails because the database is unavailable returns 503 with a `Retry-After` header and a problem-detail body, not 500.
+3. Database connection attempts fail within 2 seconds instead of 30.
+4. Shutdown is graceful: in-flight requests get up to 20 seconds to complete.
+5. All existing tests keep passing; successful responses are unchanged.

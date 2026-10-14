@@ -1,0 +1,9 @@
+name: greenfield
+type: greenfield
+title: URL shortener from scratch
+# Agents start from the build files only; there is no source code yet.
+baseline: scaffold
+requirement: >
+  Build a URL shortener service. Users submit a long URL and get a short link;
+  following the short link redirects to the original URL; users can see how many
+  times a link was clicked. It must be safe to expose publicly.

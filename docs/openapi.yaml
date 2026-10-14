@@ -1,0 +1,162 @@
+openapi: 3.1.0
+info:
+  title: URL Shortener API
+  description: |-
+    Create short links, follow them, and read click statistics.
+    Errors use RFC 9457 problem details. Creating links is rate limited per client IP.
+  version: 0.1.0
+servers:
+- url: http://localhost:8080
+  description: Generated server url
+paths:
+  /shorten:
+    post:
+      tags:
+      - Short links
+      summary: Create a short link
+      operationId: shorten
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShortenRequest"
+        required: true
+      responses:
+        "201":
+          description: Link created; Location holds the short URL
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ShortenResponse"
+        "400":
+          description: "Missing, malformed or non-http(s) URL"
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "429":
+          description: Too many links created from this IP; see Retry-After
+          headers:
+            Retry-After:
+              description: Seconds to wait
+              style: simple
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+  /{code}:
+    get:
+      tags:
+      - Short links
+      summary: Follow a short link
+      description: Redirects to the original URL and counts the click.
+      operationId: redirect
+      parameters:
+      - name: code
+        in: path
+        required: true
+        schema:
+          type: string
+        example: Ab3dE9x
+      responses:
+        "302":
+          description: Redirect to the original URL
+          headers:
+            Location:
+              description: The original URL
+              style: simple
+        "404":
+          description: Unknown code
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+  /stats/{code}:
+    get:
+      tags:
+      - Short links
+      summary: Click statistics for a short link
+      operationId: stats
+      parameters:
+      - name: code
+        in: path
+        required: true
+        schema:
+          type: string
+        example: Ab3dE9x
+      responses:
+        "200":
+          description: Statistics
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/StatsResponse"
+        "404":
+          description: Unknown code
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+components:
+  schemas:
+    ShortenRequest:
+      type: object
+      properties:
+        url:
+          type: string
+          description: "The http(s) URL to shorten, at most 2048 characters"
+          example: https://example.com/some/long/path
+      required:
+      - url
+    ProblemDetail:
+      type: object
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+          format: int32
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri
+        properties:
+          type: object
+          additionalProperties: {}
+    ShortenResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          example: Ab3dE9x
+        shortUrl:
+          type: string
+          example: http://localhost:8080/Ab3dE9x
+        originalUrl:
+          type: string
+          example: https://example.com/some/long/path
+    StatsResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          example: Ab3dE9x
+        originalUrl:
+          type: string
+          example: https://example.com/some/long/path
+        clickCount:
+          type: integer
+          format: int64
+          description: Number of redirects served
+          example: 3
+        createdAt:
+          type: string
+          format: date-time
+        lastAccessedAt:
+          type: string
+          format: date-time
+          description: Time of the last redirect; null if never visited

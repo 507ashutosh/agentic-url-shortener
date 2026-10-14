@@ -12,6 +12,9 @@ import java.nio.charset.StandardCharsets;
  */
 public final class ScriptedLlmClient implements LlmClient {
 
+    /** The heading LlmAgent puts above human feedback in a prompt. */
+    public static final String FEEDBACK_HEADING = "# Reviewer feedback";
+
     private final String scenario;
 
     public ScriptedLlmClient(String scenario) {
@@ -20,7 +23,17 @@ public final class ScriptedLlmClient implements LlmClient {
 
     @Override
     public String complete(LlmRequest request) {
-        String resource = "/mock/" + scenario + "/" + request.agentId() + ".txt";
+        // After human feedback, a recorded follow-up answer is used when the scenario has one.
+        if (request.userPrompt().contains(FEEDBACK_HEADING)) {
+            String revised = "/mock/" + scenario + "/" + request.agentId() + ".revised.txt";
+            if (ScriptedLlmClient.class.getResource(revised) != null) {
+                return read(revised);
+            }
+        }
+        return read("/mock/" + scenario + "/" + request.agentId() + ".txt");
+    }
+
+    private static String read(String resource) {
         try (InputStream in = ScriptedLlmClient.class.getResourceAsStream(resource)) {
             if (in == null) {
                 throw new LlmException("No recorded response at " + resource);
