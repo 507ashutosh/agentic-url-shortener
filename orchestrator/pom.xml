@@ -14,8 +14,19 @@
     <name>orchestrator</name>
     <description>Agentic SDLC orchestrator: dependency-graph engine, agents, gates and governance</description>
 
-    <!-- Plain Java, no Spring: the orchestration logic is built from scratch so every mechanism is visible. -->
+    <!-- Plain Java, no Spring: the orchestration logic is built from scratch so every mechanism is visible.
+         Libraries are used only for plumbing: the Claude API client and YAML parsing. -->
     <dependencies>
+        <dependency>
+            <groupId>com.anthropic</groupId>
+            <artifactId>anthropic-java</artifactId>
+            <version>2.71.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -31,15 +42,12 @@
     <build>
         <finalName>orchestrator</finalName>
         <plugins>
+            <!-- Packages the orchestrator and its libraries into one runnable jar. -->
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-jar-plugin</artifactId>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
-                    <archive>
-                        <manifest>
-                            <mainClass>com.agentic.orchestrator.OrchestratorApp</mainClass>
-                        </manifest>
-                    </archive>
+                    <mainClass>com.agentic.orchestrator.OrchestratorApp</mainClass>
                 </configuration>
             </plugin>
         </plugins>

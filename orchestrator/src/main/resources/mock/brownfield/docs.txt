@@ -1,0 +1,59 @@
+SUMMARY: Feature guide for link expiry with request/response examples, error cases and migration notes
+
+<<<FILE docs/features/link-expiry.md
+# Link expiry
+
+Short links can be given a lifetime in days. After that, the link stops redirecting.
+
+## Creating a link that expires
+
+Add `expiresInDays` (a whole number from 1 to 3650) when shortening:
+
+```bash
+curl -X POST localhost:8080/shorten \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://example.com/promo", "expiresInDays": 7}'
+```
+
+```json
+{
+  "code": "Ab3dE9x",
+  "shortUrl": "http://localhost:8080/Ab3dE9x",
+  "originalUrl": "https://example.com/promo",
+  "expiresAt": "2026-10-21T10:00:00Z"
+}
+```
+
+Leave `expiresInDays` out and the link never expires (`expiresAt` is `null`). This is the same behaviour as before the feature existed.
+
+## What happens after expiry
+
+| Request | Before expiry | At or after `expiresAt` |
+|---------|---------------|-------------------------|
+| `GET /{code}` | `302` redirect, click counted | `410 Gone`, click not counted |
+| `GET /stats/{code}` | `200`, `"expired": false` | `200`, `"expired": true` |
+
+Example `410` response:
+
+```json
+{"title": "Gone", "status": 410, "detail": "Short link 'Ab3dE9x' has expired", "instance": "/Ab3dE9x"}
+```
+
+## Errors
+
+| Case | Status | Detail |
+|------|--------|--------|
+| `expiresInDays` below 1 or above 3650 | `400` | `expiresInDays must be between 1 and 3650` |
+
+## Stats
+
+`GET /stats/{code}` now also returns:
+
+- `expiresAt`: the expiry time in UTC, or `null`
+- `expired`: whether the link has expired
+
+## Migration notes
+
+- Database: a nullable `expires_at` column is added to `url_mapping`. Existing rows get `null`, meaning they never expire. No backfill is needed.
+- API: all new fields are optional or additive; existing clients are unaffected.
+>>>

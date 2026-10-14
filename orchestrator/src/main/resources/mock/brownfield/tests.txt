@@ -1,0 +1,235 @@
+SUMMARY: 2 new test classes: unit tests for the expiry rules and an end-to-end test with a controllable clock
+DECISION: Replace the clock in the integration test with a @Primary test clock | BECAUSE: lets the test move time forward one day instead of waiting
+ASSUMPTION: The service exposes MAX_EXPIRY_DAYS = 3650 and the exception names given in the design
+
+Covers acceptance criteria 1-7. Criterion 8 (existing tests still pass) is checked by the validate stage running the full suite.
+
+<<<FILE shortener/src/test/java/com/agentic/shortener/service/UrlServiceExpiryTest.java
+package com.agentic.shortener.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Optional;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import com.agentic.shortener.domain.UrlMapping;
+import com.agentic.shortener.domain.UrlMappingRepository;
+
+class UrlServiceExpiryTest {
+
+    private static final Instant NOW = Instant.parse("2026-10-14T10:00:00Z");
+
+    private final UrlMappingRepository repository = mock(UrlMappingRepository.class);
+    private final CodeGenerator codeGenerator = mock(CodeGenerator.class);
+    private UrlService service;
+
+    @BeforeEach
+    void setUp() {
+        service = serviceAt(NOW);
+        when(codeGenerator.next()).thenReturn("abc1234");
+        when(repository.save(any(UrlMapping.class))).thenAnswer(call -> call.getArgument(0));
+    }
+
+    private UrlService serviceAt(Instant now) {
+        return new UrlService(repository, new UrlValidator(), codeGenerator, Clock.fixed(now, ZoneOffset.UTC));
+    }
+
+    @Test
+    void expiryIsCreationTimePlusTheGivenDays() {
+        UrlMapping saved = service.shorten("https://example.com", 7);
+
+        assertThat(saved.getExpiresAt()).isEqualTo(NOW.plus(Duration.ofDays(7)));
+    }
+
+    @Test
+    void linkWithoutExpiryNeverExpires() {
+        UrlMapping saved = service.shorten("https://example.com", null);
+
+        assertThat(saved.getExpiresAt()).isNull();
+        assertThat(saved.isExpiredAt(NOW.plus(Duration.ofDays(100_000)))).isFalse();
+    }
+
+    @Test
+    void oneArgumentShortenStillCreatesANonExpiringLink() {
+        assertThat(service.shorten("https://example.com").getExpiresAt()).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1, 3651})
+    void rejectsExpiryOutsideTheAllowedRange(int days) {
+        assertThatThrownBy(() -> service.shorten("https://example.com", days))
+                .isInstanceOf(InvalidExpiryException.class)
+                .hasMessage("expiresInDays must be between 1 and 3650");
+        verify(repository, never()).save(any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 3650})
+    void acceptsTheBoundariesOfTheRange(int days) {
+        assertThat(service.shorten("https://example.com", days).getExpiresAt()).isNotNull();
+    }
+
+    @Test
+    void resolveBeforeExpiryRedirectsAndCountsTheClick() {
+        when(repository.findByCode("abc1234")).thenReturn(Optional.of(
+                new UrlMapping("abc1234", "https://example.com", NOW, NOW.plus(Duration.ofDays(1)))));
+
+        assertThat(service.resolve("abc1234")).isEqualTo("https://example.com");
+        verify(repository).recordClick("abc1234", NOW);
+    }
+
+    @Test
+    void resolveAtTheExactExpiryTimeIsRefusedAndNotCounted() {
+        Instant expiresAt = NOW.plus(Duration.ofDays(1));
+        when(repository.findByCode("abc1234")).thenReturn(Optional.of(
+                new UrlMapping("abc1234", "https://example.com", NOW, expiresAt)));
+
+        assertThatThrownBy(() -> serviceAt(expiresAt).resolve("abc1234"))
+                .isInstanceOf(LinkExpiredException.class)
+                .hasMessage("Short link 'abc1234' has expired");
+        verify(repository, never()).recordClick(any(), any());
+    }
+}
+>>>
+<<<FILE shortener/src/test/java/com/agentic/shortener/LinkExpiryIntegrationTest.java
+package com.agentic.shortener;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+
+import com.jayway.jsonpath.JsonPath;
+
+/** Creates links, moves time forward, and checks the HTTP behaviour before and after expiry. */
+@SpringBootTest(properties = "shortener.rate-limit.requests=1000")
+@AutoConfigureMockMvc
+@Import(LinkExpiryIntegrationTest.TestClockConfig.class)
+class LinkExpiryIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private MutableClock clock;
+
+    @Test
+    void linkRedirectsUntilItExpiresThenReturns410() throws Exception {
+        String code = shorten("{\"url\": \"https://example.com/promo\", \"expiresInDays\": 1}");
+
+        mockMvc.perform(get("/" + code)).andExpect(status().isFound());
+
+        clock.advance(Duration.ofDays(1));
+
+        mockMvc.perform(get("/" + code))
+                .andExpect(status().isGone())
+                .andExpect(jsonPath("$.detail").value("Short link '" + code + "' has expired"));
+        mockMvc.perform(get("/stats/" + code))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.expired").value(true))
+                .andExpect(jsonPath("$.clickCount").value(1))
+                .andExpect(jsonPath("$.expiresAt").isNotEmpty());
+    }
+
+    @Test
+    void createResponseIncludesTheExpiryTime() throws Exception {
+        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\": \"https://example.com\", \"expiresInDays\": 7}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.expiresAt").isNotEmpty());
+    }
+
+    @Test
+    void linkWithoutExpiryReportsNoExpiryAndNeverExpires() throws Exception {
+        String code = shorten("{\"url\": \"https://example.com\"}");
+
+        clock.advance(Duration.ofDays(5000));
+
+        mockMvc.perform(get("/" + code)).andExpect(status().isFound());
+        mockMvc.perform(get("/stats/" + code))
+                .andExpect(jsonPath("$.expiresAt").isEmpty())
+                .andExpect(jsonPath("$.expired").value(false));
+    }
+
+    @Test
+    void invalidExpiryIsRejectedWith400() throws Exception {
+        mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\": \"https://example.com\", \"expiresInDays\": 0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value("expiresInDays must be between 1 and 3650"));
+    }
+
+    private String shorten(String body) throws Exception {
+        String response = mockMvc.perform(post("/shorten").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        return JsonPath.read(response, "$.code");
+    }
+
+    @TestConfiguration
+    static class TestClockConfig {
+
+        @Bean
+        @Primary
+        MutableClock testClock() {
+            return new MutableClock();
+        }
+    }
+
+    /** A clock the test can move forward by hand. */
+    static final class MutableClock extends Clock {
+
+        private volatile Instant now = Instant.parse("2026-10-14T10:00:00Z");
+
+        void advance(Duration duration) {
+            now = now.plus(duration);
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+    }
+}
+>>>

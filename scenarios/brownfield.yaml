@@ -1,0 +1,5 @@
+name: brownfield
+type: brownfield
+title: Link expiry
+requirement: >
+  Links should expire after N days.

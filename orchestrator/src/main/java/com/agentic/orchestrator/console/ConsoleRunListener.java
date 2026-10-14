@@ -40,7 +40,7 @@ public class ConsoleRunListener implements RunListener {
     @Override
     public synchronized void stageFinished(StageOutcome outcome) {
         Duration finishedAt = outcome.startedAt().plus(outcome.duration());
-        out.printf("  %s  %s %-14s %s%n", clock(finishedAt), symbol(outcome.status()), outcome.stageId(),
+        out.printf("  %s  %s %-16s %s%n", clock(finishedAt), symbol(outcome.status()), outcome.stageId(),
                 outcome.status() == StageStatus.SKIPPED
                         ? "skipped: " + outcome.detail()
                         : seconds(outcome.duration()) + "  " + outcome.detail());

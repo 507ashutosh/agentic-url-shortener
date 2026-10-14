@@ -13,3 +13,6 @@ target/
 # Local secrets and environment
 .env
 *.env
+
+# Orchestrator run output (workspaces, artifacts, logs)
+runs/
